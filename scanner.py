@@ -22,7 +22,7 @@ def send_telegram(msg):
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
 
-print("Starting Phase 1 scan...")
+print("Starting Phase 1 product-link scan...")
 
 url = "https://www.amazon.com/gp/goldbox"
 headers = {
@@ -34,21 +34,44 @@ try:
     print("Page status:", response.status_code)
 
     soup = BeautifulSoup(response.text, "lxml")
-    page_text = soup.get_text("\n", strip=True)
 
-    lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
     matches = []
 
-    for line in lines:
-        if "$" in line and len(line) > 10:
-            matches.append(line)
+    for a in soup.find_all("a", href=True):
+        text = a.get_text(" ", strip=True)
+        text = re.sub(r"\s+", " ", text).strip()
+        href = a["href"]
 
-    matches = list(dict.fromkeys(matches))[:10]
+        if len(text) < 20:
+            continue
 
-    if matches:
-        message = "Phase 1 scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
+        # Ignore obvious generic promo junk
+        bad_phrases = [
+            "shop now", "see more", "learn more", "limited time",
+            "deals", "under $", "top deals", "coupon", "discover"
+        ]
+        if any(bp in text.lower() for bp in bad_phrases):
+            continue
+
+        # Keep things that look more like product pages/links
+        if "/dp/" in href or "/gp/" in href or len(text.split()) >= 4:
+            full_url = href if href.startswith("http") else f"https://www.amazon.com{href}"
+            matches.append(f"{text}\n{full_url}")
+
+    # remove duplicates while preserving order
+    seen = set()
+    cleaned = []
+    for m in matches:
+        if m not in seen:
+            seen.add(m)
+            cleaned.append(m)
+
+    cleaned = cleaned[:8]
+
+    if cleaned:
+        message = "Phase 1 product-like results:\n\n" + "\n\n".join(f"- {m}" for m in cleaned)
     else:
-        message = "Phase 1 scan completed, but no clean priced items were found."
+        message = "Phase 1 scan completed, but no clean product-like links were found."
 
     send_telegram(message)
 
