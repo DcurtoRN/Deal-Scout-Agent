@@ -12,7 +12,6 @@ def send_telegram(msg):
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-
     response = requests.post(
         url,
         json={"chat_id": chat_id, "text": msg},
@@ -22,9 +21,9 @@ def send_telegram(msg):
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
 
-print("Starting Phase 1 product-link scan...")
+print("Starting eBay LEGO scan...")
 
-url = "https://www.amazon.com/gp/goldbox"
+url = "https://www.ebay.com/sch/i.html?_nkw=lego"
 headers = {
     "User-Agent": "Mozilla/5.0"
 }
@@ -34,31 +33,38 @@ try:
     print("Page status:", response.status_code)
 
     soup = BeautifulSoup(response.text, "lxml")
-
     matches = []
 
-    for a in soup.find_all("a", href=True):
-        text = a.get_text(" ", strip=True)
-        text = re.sub(r"\s+", " ", text).strip()
-        href = a["href"]
+    # eBay search result cards commonly use these classes/selectors
+    items = soup.select(".s-item")
 
-        if len(text) < 20:
+    for item in items:
+        title_el = item.select_one(".s-item__title")
+        price_el = item.select_one(".s-item__price")
+        link_el = item.select_one(".s-item__link")
+
+        if not title_el or not price_el or not link_el:
             continue
 
-        # Ignore obvious generic promo junk
+        title = re.sub(r"\s+", " ", title_el.get_text(" ", strip=True)).strip()
+        price = re.sub(r"\s+", " ", price_el.get_text(" ", strip=True)).strip()
+        link = link_el.get("href", "").strip()
+
+        if not title or not price or not link:
+            continue
+
+        # Skip generic or sponsored junk
         bad_phrases = [
-            "shop now", "see more", "learn more", "limited time",
-            "deals", "under $", "top deals", "coupon", "discover"
+            "shop on ebay",
+            "results matching fewer words",
+            "sponsored"
         ]
-        if any(bp in text.lower() for bp in bad_phrases):
+        if any(bp in title.lower() for bp in bad_phrases):
             continue
 
-        # Keep things that look more like product pages/links
-        if "/dp/" in href or "/gp/" in href or len(text.split()) >= 4:
-            full_url = href if href.startswith("http") else f"https://www.amazon.com{href}"
-            matches.append(f"{text}\n{full_url}")
+        matches.append(f"{title}\nPrice: {price}\n{link}")
 
-    # remove duplicates while preserving order
+    # dedupe and keep first 8
     seen = set()
     cleaned = []
     for m in matches:
@@ -69,25 +75,25 @@ try:
     cleaned = cleaned[:8]
 
     if cleaned:
-        message = "Phase 1 product-like results:\n\n" + "\n\n".join(f"- {m}" for m in cleaned)
+        message = "Phase 1 eBay LEGO results:\n\n" + "\n\n".join(f"- {m}" for m in cleaned)
     else:
-        message = "Phase 1 scan completed, but no clean product-like links were found."
+        message = "Phase 1 eBay scan completed, but no clean product matches were found."
 
     send_telegram(message)
 
 except requests.exceptions.Timeout:
-    error_msg = "Phase 1 scan failed: request timed out while fetching the source page."
-    print(error_msg)
-    send_telegram(error_msg)
+    msg = "Phase 1 eBay scan failed: request timed out."
+    print(msg)
+    send_telegram(msg)
 
 except requests.exceptions.RequestException as e:
-    error_msg = f"Phase 1 scan failed: request error: {str(e)}"
-    print(error_msg)
-    send_telegram(error_msg)
+    msg = f"Phase 1 eBay scan failed: request error: {str(e)}"
+    print(msg)
+    send_telegram(msg)
 
 except Exception as e:
-    error_msg = f"Phase 1 scan failed: unexpected error: {str(e)}"
-    print(error_msg)
-    send_telegram(error_msg)
+    msg = f"Phase 1 eBay scan failed: unexpected error: {str(e)}"
+    print(msg)
+    send_telegram(msg)
 
 print("Scan finished")
