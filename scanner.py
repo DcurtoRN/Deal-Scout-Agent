@@ -31,7 +31,7 @@ watch_categories = [
 
 message = (
     "Deal Scout Phase 1 check-in\n\n"
-    f"Run time: {datetime.now(ZoneInfo("America/New_York")).strftime('%Y-%m-%d %I:%M %p EST')}\n\n"
+    f"Run time: {datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d %I:%M %p EST')}\n\n"
     "Current watch categories:\n"
     + "\n".join(f"- {item}" for item in watch_categories)
     + "\n\nSystem status: GitHub runner + Telegram alerts working."
