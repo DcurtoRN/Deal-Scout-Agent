@@ -39,55 +39,81 @@ def load_price_reference(path="price_reference.csv"):
     return rows
 
 
-def build_message(watchlist_data, price_rows):
+def get_category_rules(watchlist_data, category_name):
+    for category in watchlist_data.get("categories", []):
+        if category.get("name", "").strip().lower() == category_name.strip().lower():
+            return category
+    return None
+
+
+def to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def score_item(row, rules):
+    category = row.get("category", "Unknown")
+    brand = row.get("brand", "Unknown")
+    model_key = row.get("model_key", "Unknown")
+    confidence = row.get("confidence", "unknown")
+
+    buy_price = to_float(row.get("buy_price"))
+    avg_resale_price = to_float(row.get("avg_resale_price"))
+    fee_pct = to_float(row.get("estimated_fee_pct"))
+    shipping = to_float(row.get("estimated_shipping"))
+
+    fees = avg_resale_price * fee_pct
+    profit = avg_resale_price - buy_price - fees - shipping
+    roi = (profit / buy_price) if buy_price > 0 else 0
+
+    min_roi = to_float(rules.get("min_roi", 0.30)) if rules else 0.30
+    min_profit = to_float(rules.get("min_profit", 15)) if rules else 15
+
+    if profit >= min_profit and roi >= min_roi:
+        action = "BUY"
+    elif profit > 0 and roi >= (min_roi * 0.5):
+        action = "WATCH"
+    else:
+        action = "SKIP"
+
+    return {
+        "category": category,
+        "brand": brand,
+        "model_key": model_key,
+        "buy_price": round(buy_price, 2),
+        "avg_resale_price": round(avg_resale_price, 2),
+        "fees": round(fees, 2),
+        "shipping": round(shipping, 2),
+        "profit": round(profit, 2),
+        "roi_pct": round(roi * 100, 1),
+        "action": action,
+        "confidence": confidence,
+        "min_roi_pct": round(min_roi * 100, 1),
+        "min_profit": round(min_profit, 2)
+    }
+
+
+def build_message(watchlist_data, scored_items):
     current_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
-    categories = watchlist_data.get("categories", [])
-
-    category_lines = []
-    for category in categories:
-        name = category.get("name", "Unnamed Category")
-        min_roi = category.get("min_roi", 0)
-        min_profit = category.get("min_profit", 0)
-        category_lines.append(
-            f"- {name} | Min ROI: {int(min_roi * 100)}% | Min Profit: ${min_profit}"
+    lines = []
+    for item in scored_items:
+        lines.append(
+            f"{item['action']} | {item['category']} | {item['brand']} {item['model_key']}\n"
+            f"Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
+            f"Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
+            f"Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
+            f"Confidence: {item['confidence']} | Thresholds: {item['min_roi_pct']}% / ${item['min_profit']}"
         )
-
-    total_rows = len(price_rows)
-    placeholder_rows = 0
-    reference_lines = []
-
-    for row in price_rows[:5]:
-        category = row.get("category", "Unknown")
-        brand = row.get("brand", "Unknown")
-        model_key = row.get("model_key", "Unknown")
-        avg_resale = row.get("avg_resale_price", "0")
-        confidence = row.get("confidence", "unknown")
-
-        if avg_resale in ("0", "0.0", "0.00", ""):
-            placeholder_rows += 1
-
-        reference_lines.append(
-            f"- {category} | {brand} | {model_key} | Avg Resale: ${avg_resale} | Confidence: {confidence}"
-        )
-
-    # count all placeholders, not just first 5
-    placeholder_rows = sum(
-        1 for row in price_rows
-        if row.get("avg_resale_price", "0") in ("0", "0.0", "0.00", "")
-    )
 
     message = (
-        "Deal Scout Phase 2 check-in\n\n"
+        "Deal Scout Phase 2 scoring check\n\n"
         f"Run time: {current_time}\n\n"
-        "Tracked categories from watchlist.json:\n"
-        + ("\n".join(category_lines) if category_lines else "- None found")
-        + "\n\n"
-        f"Reference pricing rows loaded: {total_rows}\n"
-        f"Placeholder rows still needing real pricing: {placeholder_rows}\n\n"
-        "Sample reference entries:\n"
-        + ("\n".join(reference_lines) if reference_lines else "- None found")
-        + "\n\nSystem status: GitHub runner + Telegram alerts + watchlist + price reference working."
+        "Scored reference items:\n\n"
+        + "\n\n".join(lines)
+        + "\n\nSystem status: scoring engine working."
     )
 
     return message
@@ -100,13 +126,19 @@ def main():
     print("Loading price_reference.csv...")
     price_rows = load_price_reference()
 
+    print("Scoring items...")
+    scored_items = []
+    for row in price_rows:
+        rules = get_category_rules(watchlist_data, row.get("category", ""))
+        scored_items.append(score_item(row, rules))
+
     print("Building Telegram message...")
-    message = build_message(watchlist_data, price_rows)
+    message = build_message(watchlist_data, scored_items)
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("Phase 2 reference check finished")
+    print("Phase 2 scoring check finished")
 
 
 if __name__ == "__main__":
