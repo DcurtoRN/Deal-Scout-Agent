@@ -6,6 +6,10 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
+def now_est():
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
+
+
 def send_telegram(msg):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -141,7 +145,7 @@ def score_candidates(candidates, reference_lookup, watchlist_data):
 
 
 def append_scored_results(scored_items, path="scored_results.csv"):
-    run_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
+    run_time = now_est()
 
     fieldnames = [
         "run_time", "title", "source", "category", "brand", "model_key", "condition",
@@ -173,25 +177,102 @@ def append_scored_results(scored_items, path="scored_results.csv"):
             })
 
 
-def build_buy_alert_message(buy_items, unmatched_items):
-    current_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
+def build_alert_key(item):
+    return (
+        item.get("source", "").strip().lower(),
+        item.get("category", "").strip().lower(),
+        item.get("brand", "").strip().lower(),
+        item.get("model_key", "").strip().lower(),
+        item.get("condition", "").strip().lower(),
+        str(item.get("buy_price", "")).strip()
+    )
 
-    if not buy_items:
+
+def load_alerted_keys(path="alerted_items.csv"):
+    keys = set()
+    rows = load_csv_rows(path)
+
+    for row in rows:
+        key = (
+            row.get("source", "").strip().lower(),
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+            str(row.get("buy_price", "")).strip()
+        )
+        keys.add(key)
+
+    return keys
+
+
+def append_alerted_items(items, path="alerted_items.csv"):
+    fieldnames = [
+        "alert_time", "title", "source", "category", "brand",
+        "model_key", "condition", "buy_price", "action", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        for item in items:
+            writer.writerow({
+                "alert_time": now_est(),
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "action": item["action"],
+                "url": item["url"]
+            })
+
+
+def filter_new_buy_items(scored_items, alerted_keys):
+    buy_items = [item for item in scored_items if item["action"] == "BUY"]
+    new_buy_items = []
+
+    for item in buy_items:
+        key = build_alert_key(item)
+        if key not in alerted_keys:
+            new_buy_items.append(item)
+
+    return buy_items, new_buy_items
+
+
+def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
+    current_time = now_est()
+
+    if not all_buy_items:
         return (
-            "Deal Scout BUY check\n\n"
+            "Deal Scout BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
             "No BUY candidates found this run.\n\n"
             f"Unmatched candidates: {len(unmatched_items)}\n"
-            "Scored results were still saved to scored_results.csv."
+            "All scored items were still saved to scored_results.csv."
+        )
+
+    if not new_buy_items:
+        return (
+            "Deal Scout BUY alert check\n\n"
+            f"Run time: {current_time}\n\n"
+            f"BUY candidates found: {len(all_buy_items)}\n"
+            "New BUY alerts: 0\n\n"
+            "All BUY items this run were already alerted previously.\n\n"
+            f"Unmatched candidates: {len(unmatched_items)}\n"
+            "All scored items were still saved to scored_results.csv."
         )
 
     blocks = [
-        "Deal Scout BUY alert\n",
+        "Deal Scout NEW BUY alert\n",
         f"Run time: {current_time}\n",
-        f"BUY candidates found: {len(buy_items)}\n"
+        f"BUY candidates found this run: {len(all_buy_items)}",
+        f"New BUY alerts sent: {len(new_buy_items)}\n"
     ]
 
-    for item in buy_items:
+    for item in new_buy_items:
         blocks.append(
             f"- {item['brand']} {item['model_key']} ({item['category']})\n"
             f"  Source: {item['source']}\n"
@@ -203,7 +284,8 @@ def build_buy_alert_message(buy_items, unmatched_items):
         )
 
     blocks.append(f"Unmatched candidates: {len(unmatched_items)}")
-    blocks.append("Full scored history saved to scored_results.csv.")
+    blocks.append("Scored results saved to scored_results.csv.")
+    blocks.append("New BUY alerts saved to alerted_items.csv.")
 
     return "\n".join(blocks)
 
@@ -231,15 +313,25 @@ def main():
     print("Appending scored results to scored_results.csv...")
     append_scored_results(scored_items)
 
-    buy_items = [item for item in scored_items if item["action"] == "BUY"]
+    print("Loading previously alerted BUY items...")
+    alerted_keys = load_alerted_keys()
 
-    print("Building BUY-only Telegram message...")
-    message = build_buy_alert_message(buy_items, unmatched_items)
+    print("Filtering BUY items against alert history...")
+    all_buy_items, new_buy_items = filter_new_buy_items(scored_items, alerted_keys)
+
+    if new_buy_items:
+        print("Appending new BUY alerts to alerted_items.csv...")
+        append_alerted_items(new_buy_items)
+    else:
+        print("No new BUY alerts to save.")
+
+    print("Building Telegram message...")
+    message = build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items)
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("BUY-only alert run finished")
+    print("Alert suppression run finished")
 
 
 if __name__ == "__main__":
