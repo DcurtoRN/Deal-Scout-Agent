@@ -29,7 +29,7 @@ def send_telegram(msg):
     print("Telegram response:", response.text)
 
 
-def load_watchlist(path="watchlist.json"):
+def load_watchlist(path="data/watchlist.json"):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -144,7 +144,7 @@ def score_candidates(candidates, reference_lookup, watchlist_data):
     return scored, unmatched
 
 
-def append_scored_results(scored_items, path="scored_results.csv"):
+def append_scored_results(scored_items, path="data/scored_results.csv"):
     run_time = now_est()
 
     fieldnames = [
@@ -188,7 +188,7 @@ def build_alert_key(item):
     )
 
 
-def load_alerted_keys(path="alerted_items.csv"):
+def load_alerted_keys(path="data/alerted_items.csv"):
     keys = set()
     rows = load_csv_rows(path)
 
@@ -206,7 +206,7 @@ def load_alerted_keys(path="alerted_items.csv"):
     return keys
 
 
-def append_alerted_items(items, path="alerted_items.csv"):
+def append_alerted_items(items, path="data/alerted_items.csv"):
     fieldnames = [
         "alert_time", "title", "source", "category", "brand",
         "model_key", "condition", "buy_price", "action", "url"
@@ -251,7 +251,7 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
             f"Run time: {current_time}\n\n"
             "No BUY candidates found this run.\n\n"
             f"Unmatched candidates: {len(unmatched_items)}\n"
-            "All scored items were still saved to scored_results.csv."
+            "All scored items were still saved to data/scored_results.csv."
         )
 
     if not new_buy_items:
@@ -262,7 +262,7 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
             "New BUY alerts: 0\n\n"
             "All BUY items this run were already alerted previously.\n\n"
             f"Unmatched candidates: {len(unmatched_items)}\n"
-            "All scored items were still saved to scored_results.csv."
+            "All scored items were still saved to data/scored_results.csv."
         )
 
     blocks = [
@@ -284,21 +284,21 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
         )
 
     blocks.append(f"Unmatched candidates: {len(unmatched_items)}")
-    blocks.append("Scored results saved to scored_results.csv.")
-    blocks.append("New BUY alerts saved to alerted_items.csv.")
+    blocks.append("Scored results saved to data/scored_results.csv.")
+    blocks.append("New BUY alerts saved to data/alerted_items.csv.")
 
     return "\n".join(blocks)
 
 
 def main():
-    print("Loading watchlist.json...")
-    watchlist_data = load_watchlist()
+    print("Loading data/watchlist.json...")
+    watchlist_data = load_watchlist("data/watchlist.json")
 
-    print("Loading price_reference.csv...")
-    price_rows = load_csv_rows("price_reference.csv")
+    print("Loading data/price_reference.csv...")
+    price_rows = load_csv_rows("data/price_reference.csv")
 
-    print("Loading candidate_items.csv...")
-    candidate_rows = load_csv_rows("candidate_items.csv")
+    print("Loading data/candidate_items.csv...")
+    candidate_rows = load_csv_rows("data/candidate_items.csv")
 
     print("Building reference lookup...")
     reference_lookup = build_reference_lookup(price_rows)
@@ -310,18 +310,18 @@ def main():
         watchlist_data
     )
 
-    print("Appending scored results to scored_results.csv...")
-    append_scored_results(scored_items)
+    print("Appending scored results to data/scored_results.csv...")
+    append_scored_results(scored_items, "data/scored_results.csv")
 
     print("Loading previously alerted BUY items...")
-    alerted_keys = load_alerted_keys()
+    alerted_keys = load_alerted_keys("data/alerted_items.csv")
 
     print("Filtering BUY items against alert history...")
     all_buy_items, new_buy_items = filter_new_buy_items(scored_items, alerted_keys)
 
     if new_buy_items:
-        print("Appending new BUY alerts to alerted_items.csv...")
-        append_alerted_items(new_buy_items)
+        print("Appending new BUY alerts to data/alerted_items.csv...")
+        append_alerted_items(new_buy_items, "data/alerted_items.csv")
     else:
         print("No new BUY alerts to save.")
 
