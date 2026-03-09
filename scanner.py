@@ -49,4 +49,8 @@ print("Possible deals found:")
 for r in results[:10]:
     print(r)
 
+print("ABOUT TO SEND TELEGRAM")
+
 send_telegram("Deal Scout agent ran successfully.")
+
+print("TELEGRAM FUNCTION FINISHED")
