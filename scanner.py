@@ -173,55 +173,39 @@ def append_scored_results(scored_items, path="scored_results.csv"):
             })
 
 
-def build_message(scored_items, unmatched_items):
+def build_buy_alert_message(buy_items, unmatched_items):
     current_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
-    buy_items = [item for item in scored_items if item["action"] == "BUY"]
-    watch_items = [item for item in scored_items if item["action"] == "WATCH"]
-    skip_items = [item for item in scored_items if item["action"] == "SKIP"]
-
-    def format_items(items, label):
-        if not items:
-            return f"{label}: none"
-
-        blocks = [f"{label}:"]
-        for item in items:
-            blocks.append(
-                f"- {item['brand']} {item['model_key']} ({item['category']})\n"
-                f"  Source: {item['source']}\n"
-                f"  Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
-                f"  Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
-                f"  Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
-                f"  Confidence: {item['confidence']}\n"
-                f"  Link: {item['url']}"
-            )
-        return "\n".join(blocks)
-
-    unmatched_lines = []
-    for item in unmatched_items[:5]:
-        unmatched_lines.append(
-            f"- {item.get('brand', 'Unknown')} {item.get('model_key', 'Unknown')} "
-            f"({item.get('category', 'Unknown')})"
+    if not buy_items:
+        return (
+            "Deal Scout BUY check\n\n"
+            f"Run time: {current_time}\n\n"
+            "No BUY candidates found this run.\n\n"
+            f"Unmatched candidates: {len(unmatched_items)}\n"
+            "Scored results were still saved to scored_results.csv."
         )
 
-    unmatched_text = "\n".join(unmatched_lines) if unmatched_lines else "None"
+    blocks = [
+        "Deal Scout BUY alert\n",
+        f"Run time: {current_time}\n",
+        f"BUY candidates found: {len(buy_items)}\n"
+    ]
 
-    message = (
-        "Deal Scout candidate scoring check\n\n"
-        f"Run time: {current_time}\n\n"
-        f"Candidates scored: {len(scored_items)}\n"
-        f"Unmatched candidates: {len(unmatched_items)}\n\n"
-        + format_items(buy_items, "BUY")
-        + "\n\n"
-        + format_items(watch_items, "WATCH")
-        + "\n\n"
-        + format_items(skip_items, "SKIP")
-        + "\n\nUnmatched sample:\n"
-        + unmatched_text
-        + "\n\nSystem status: candidate scoring pipeline working and results saved to scored_results.csv."
-    )
+    for item in buy_items:
+        blocks.append(
+            f"- {item['brand']} {item['model_key']} ({item['category']})\n"
+            f"  Source: {item['source']}\n"
+            f"  Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
+            f"  Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
+            f"  Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
+            f"  Confidence: {item['confidence']}\n"
+            f"  Link: {item['url']}\n"
+        )
 
-    return message
+    blocks.append(f"Unmatched candidates: {len(unmatched_items)}")
+    blocks.append("Full scored history saved to scored_results.csv.")
+
+    return "\n".join(blocks)
 
 
 def main():
@@ -247,13 +231,15 @@ def main():
     print("Appending scored results to scored_results.csv...")
     append_scored_results(scored_items)
 
-    print("Building Telegram message...")
-    message = build_message(scored_items, unmatched_items)
+    buy_items = [item for item in scored_items if item["action"] == "BUY"]
+
+    print("Building BUY-only Telegram message...")
+    message = build_buy_alert_message(buy_items, unmatched_items)
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("Candidate scoring check finished")
+    print("BUY-only alert run finished")
 
 
 if __name__ == "__main__":
