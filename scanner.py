@@ -30,20 +30,13 @@ def load_watchlist(path="watchlist.json"):
         return json.load(f)
 
 
-def load_price_reference(path="price_reference.csv"):
+def load_csv_rows(path):
     rows = []
     with open(path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
     return rows
-
-
-def get_category_rules(watchlist_data, category_name):
-    for category in watchlist_data.get("categories", []):
-        if category.get("name", "").strip().lower() == category_name.strip().lower():
-            return category
-    return None
 
 
 def to_float(value, default=0.0):
@@ -53,16 +46,41 @@ def to_float(value, default=0.0):
         return default
 
 
-def score_item(row, rules):
-    category = row.get("category", "Unknown")
-    brand = row.get("brand", "Unknown")
-    model_key = row.get("model_key", "Unknown")
-    confidence = row.get("confidence", "unknown")
+def get_category_rules(watchlist_data, category_name):
+    for category in watchlist_data.get("categories", []):
+        if category.get("name", "").strip().lower() == category_name.strip().lower():
+            return category
+    return None
 
-    buy_price = to_float(row.get("buy_price"))
-    avg_resale_price = to_float(row.get("avg_resale_price"))
-    fee_pct = to_float(row.get("estimated_fee_pct"))
-    shipping = to_float(row.get("estimated_shipping"))
+
+def build_reference_lookup(price_rows):
+    lookup = {}
+
+    for row in price_rows:
+        category = row.get("category", "").strip().lower()
+        brand = row.get("brand", "").strip().lower()
+        model_key = row.get("model_key", "").strip().lower()
+        condition = row.get("condition", "").strip().lower()
+
+        key = (category, brand, model_key, condition)
+        lookup[key] = row
+
+    return lookup
+
+
+def score_candidate(candidate, reference_row, rules):
+    category = candidate.get("category", "Unknown")
+    brand = candidate.get("brand", "Unknown")
+    model_key = candidate.get("model_key", "Unknown")
+    title = candidate.get("title", "Unknown")
+    source = candidate.get("source", "Unknown")
+    url = candidate.get("url", "")
+    condition = candidate.get("condition", "unknown")
+
+    buy_price = to_float(candidate.get("price"))
+    avg_resale_price = to_float(reference_row.get("avg_resale_price"))
+    fee_pct = to_float(reference_row.get("estimated_fee_pct"))
+    shipping = to_float(reference_row.get("estimated_shipping"))
 
     fees = avg_resale_price * fee_pct
     profit = avg_resale_price - buy_price - fees - shipping
@@ -79,9 +97,13 @@ def score_item(row, rules):
         action = "SKIP"
 
     return {
+        "title": title,
+        "source": source,
+        "url": url,
         "category": category,
         "brand": brand,
         "model_key": model_key,
+        "condition": condition,
         "buy_price": round(buy_price, 2),
         "avg_resale_price": round(avg_resale_price, 2),
         "fees": round(fees, 2),
@@ -89,31 +111,81 @@ def score_item(row, rules):
         "profit": round(profit, 2),
         "roi_pct": round(roi * 100, 1),
         "action": action,
-        "confidence": confidence,
+        "confidence": reference_row.get("confidence", "unknown"),
         "min_roi_pct": round(min_roi * 100, 1),
         "min_profit": round(min_profit, 2)
     }
 
 
-def build_message(watchlist_data, scored_items):
+def score_candidates(candidates, reference_lookup, watchlist_data):
+    scored = []
+    unmatched = []
+
+    for candidate in candidates:
+        category = candidate.get("category", "").strip().lower()
+        brand = candidate.get("brand", "").strip().lower()
+        model_key = candidate.get("model_key", "").strip().lower()
+        condition = candidate.get("condition", "").strip().lower()
+
+        key = (category, brand, model_key, condition)
+        reference_row = reference_lookup.get(key)
+
+        if not reference_row:
+            unmatched.append(candidate)
+            continue
+
+        rules = get_category_rules(watchlist_data, candidate.get("category", ""))
+        scored.append(score_candidate(candidate, reference_row, rules))
+
+    return scored, unmatched
+
+
+def build_message(scored_items, unmatched_items):
     current_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
-    lines = []
-    for item in scored_items:
-        lines.append(
-            f"{item['action']} | {item['category']} | {item['brand']} {item['model_key']}\n"
-            f"Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
-            f"Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
-            f"Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
-            f"Confidence: {item['confidence']} | Thresholds: {item['min_roi_pct']}% / ${item['min_profit']}"
+    buy_items = [item for item in scored_items if item["action"] == "BUY"]
+    watch_items = [item for item in scored_items if item["action"] == "WATCH"]
+    skip_items = [item for item in scored_items if item["action"] == "SKIP"]
+
+    def format_items(items, label):
+        if not items:
+            return f"{label}: none"
+
+        blocks = [f"{label}:"]
+        for item in items:
+            blocks.append(
+                f"- {item['brand']} {item['model_key']} ({item['category']})\n"
+                f"  Source: {item['source']}\n"
+                f"  Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
+                f"  Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
+                f"  Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
+                f"  Confidence: {item['confidence']}\n"
+                f"  Link: {item['url']}"
+            )
+        return "\n".join(blocks)
+
+    unmatched_lines = []
+    for item in unmatched_items[:5]:
+        unmatched_lines.append(
+            f"- {item.get('brand', 'Unknown')} {item.get('model_key', 'Unknown')} "
+            f"({item.get('category', 'Unknown')})"
         )
 
+    unmatched_text = "\n".join(unmatched_lines) if unmatched_lines else "None"
+
     message = (
-        "Deal Scout Phase 2 scoring check\n\n"
+        "Deal Scout candidate scoring check\n\n"
         f"Run time: {current_time}\n\n"
-        "Scored reference items:\n\n"
-        + "\n\n".join(lines)
-        + "\n\nSystem status: scoring engine working."
+        f"Candidates scored: {len(scored_items)}\n"
+        f"Unmatched candidates: {len(unmatched_items)}\n\n"
+        + format_items(buy_items, "BUY")
+        + "\n\n"
+        + format_items(watch_items, "WATCH")
+        + "\n\n"
+        + format_items(skip_items, "SKIP")
+        + "\n\nUnmatched sample:\n"
+        + unmatched_text
+        + "\n\nSystem status: candidate scoring pipeline working."
     )
 
     return message
@@ -124,21 +196,28 @@ def main():
     watchlist_data = load_watchlist()
 
     print("Loading price_reference.csv...")
-    price_rows = load_price_reference()
+    price_rows = load_csv_rows("price_reference.csv")
 
-    print("Scoring items...")
-    scored_items = []
-    for row in price_rows:
-        rules = get_category_rules(watchlist_data, row.get("category", ""))
-        scored_items.append(score_item(row, rules))
+    print("Loading candidate_items.csv...")
+    candidate_rows = load_csv_rows("candidate_items.csv")
+
+    print("Building reference lookup...")
+    reference_lookup = build_reference_lookup(price_rows)
+
+    print("Scoring candidates...")
+    scored_items, unmatched_items = score_candidates(
+        candidate_rows,
+        reference_lookup,
+        watchlist_data
+    )
 
     print("Building Telegram message...")
-    message = build_message(watchlist_data, scored_items)
+    message = build_message(scored_items, unmatched_items)
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("Phase 2 scoring check finished")
+    print("Candidate scoring check finished")
 
 
 if __name__ == "__main__":
