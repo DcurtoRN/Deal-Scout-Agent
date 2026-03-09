@@ -1,30 +1,59 @@
 import os
+import re
 import requests
+from bs4 import BeautifulSoup
 
-print("SCRIPT STARTED")
+def send_telegram(msg):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-token = os.getenv("TELEGRAM_BOT_TOKEN")
-chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Missing Telegram config")
+        return
 
-print("TOKEN EXISTS:", bool(token))
-print("CHAT ID EXISTS:", bool(chat_id))
-print("CHAT ID VALUE:", chat_id)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-if not token or not chat_id:
-    print("MISSING TOKEN OR CHAT ID")
-    raise SystemExit(1)
+    response = requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": msg
+        },
+        timeout=30
+    )
 
-url = f"https://api.telegram.org/bot{token}/sendMessage"
+    print("Telegram status:", response.status_code)
+    print("Telegram response:", response.text)
 
-response = requests.post(
-    url,
-    json={
-        "chat_id": chat_id,
-        "text": "GitHub Telegram test successful"
-    },
-    timeout=30
-)
+print("Starting Target LEGO scan...")
 
-print("STATUS CODE:", response.status_code)
-print("RESPONSE TEXT:", response.text)
-print("SCRIPT FINISHED")
+url = "https://www.target.com/c/lego-construction-toys/-/N-5xt9h"
+headers = {"User-Agent": "Mozilla/5.0"}
+
+response = requests.get(url, headers=headers, timeout=30)
+soup = BeautifulSoup(response.text, "lxml")
+
+items = soup.find_all("a")
+results = []
+
+for item in items:
+    text = item.get_text(" ", strip=True)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if "LEGO" in text and "$" in text and len(text) > 15:
+        results.append(text)
+
+# remove duplicates while keeping order
+results = list(dict.fromkeys(results))
+
+# keep only the first 10
+results = results[:10]
+
+if results:
+    message = "Target LEGO scan results:\n\n" + "\n\n".join(f"- {r}" for r in results)
+else:
+    message = "Target LEGO scan ran, but no matching items were found."
+
+send_telegram(message)
+
+print("Scan finished")
