@@ -1,6 +1,6 @@
-category,brand,model_key,condition,avg_resale_price,low_resale_price,high_resale_price,estimated_fee_pct,estimated_shipping,last_updated,confidence,notes
-LEGO,LEGO,75355,new,0,0,0,0.15,8,2026-03-09,low,Placeholder row for future resale reference data
-Power Tools,Milwaukee,2904-22,new,0,0,0,0.15,12,2026-03-09,low,Placeholder row for future resale reference data
-Pokemon Cards,Pokemon,151-etb,new,0,0,0,0.13,6,2026-03-09,low,Placeholder row for future resale reference data
-Small Appliances,Ninja,creami,new,0,0,0,0.15,10,2026-03-09,low,Placeholder row for future resale reference data
-Electronics Accessories,Sony,wh-1000xm5,new,0,0,0,0.15,7,2026-03-09,low,Placeholder row for future resale reference data
+category,brand,model_key,condition,buy_price,avg_resale_price,low_resale_price,high_resale_price,estimated_fee_pct,estimated_shipping,last_updated,confidence,notes
+LEGO,LEGO,75355,new,42,71,64,84,0.15,8,2026-03-09,high,Sample scoring row
+Power Tools,Milwaukee,2904-22,new,149,229,205,249,0.15,12,2026-03-09,high,Sample scoring row
+Pokemon Cards,Pokemon,151-etb,new,38,74,68,82,0.13,6,2026-03-09,medium,Sample scoring row
+Small Appliances,Ninja,creami,new,88,140,125,155,0.15,10,2026-03-09,medium,Sample scoring row
+Electronics Accessories,Sony,wh-1000xm5,new,220,300,270,330,0.15,7,2026-03-09,high,Sample scoring row
