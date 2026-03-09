@@ -27,33 +27,48 @@ def send_telegram(msg):
 
 print("Starting Target LEGO scan...")
 
-url = "https://www.target.com/c/lego-construction-toys/-/N-5xt9h"
-headers = {"User-Agent": "Mozilla/5.0"}
+url = "https://www.target.com/s/lego%20construction%20site"
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
 
 response = requests.get(url, headers=headers, timeout=30)
-soup = BeautifulSoup(response.text, "lxml")
+print("Page status:", response.status_code)
 
-items = soup.find_all("a")
-results = []
+html = response.text
+soup = BeautifulSoup(html, "lxml")
 
-for item in items:
-    text = item.get_text(" ", strip=True)
-    text = re.sub(r"\s+", " ", text).strip()
+# First pass: collect visible text from page
+page_text = soup.get_text("\n", strip=True)
 
-    if "LEGO" in text and "$" in text and len(text) > 15:
-        results.append(text)
+# Look for lines that mention LEGO and a price
+lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
+matches = []
 
-# remove duplicates while keeping order
-results = list(dict.fromkeys(results))
+for i, line in enumerate(lines):
+    if "LEGO" in line and "$" in line:
+        matches.append(line)
 
-# keep only the first 10
-results = results[:10]
+# Backup pass: search all text chunks if first pass is sparse
+if not matches:
+    text_chunks = soup.find_all(string=True)
+    for chunk in text_chunks:
+        text = re.sub(r"\s+", " ", str(chunk)).strip()
+        if "LEGO" in text and "$" in text and len(text) > 10:
+            matches.append(text)
 
-if results:
-    message = "Target LEGO scan results:\n\n" + "\n\n".join(f"- {r}" for r in results)
+# Remove duplicates and keep first 10
+matches = list(dict.fromkeys(matches))[:10]
+
+if matches:
+    message = "Target LEGO scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
 else:
-    message = "Target LEGO scan ran, but no matching items were found."
+    message = "Target LEGO scan ran, but still found no clean LEGO price matches on the page."
 
 send_telegram(message)
+
+print("Matches found:", len(matches))
+for m in matches:
+    print(m)
 
 print("Scan finished")
