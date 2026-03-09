@@ -1,0 +1,6 @@
+timestamp,source,title,price,url,category,brand,model_key,condition,status,notes
+2026-03-09 03:30 PM EST,eBay,LEGO Star Wars X-Wing 75355,42,https://example.com/lego-75355,LEGO,LEGO,75355,new,new_test,Sample candidate item for scoring
+2026-03-09 03:31 PM EST,eBay,Milwaukee M18 Drill Kit 2904-22,149,https://example.com/milwaukee-2904-22,Power Tools,Milwaukee,2904-22,new,new_test,Sample candidate item for scoring
+2026-03-09 03:32 PM EST,eBay,Pokemon 151 Elite Trainer Box,38,https://example.com/pokemon-151-etb,Pokemon Cards,Pokemon,151-etb,new,new_test,Sample candidate item for scoring
+2026-03-09 03:33 PM EST,eBay,Ninja Creami Ice Cream Maker,88,https://example.com/ninja-creami,Small Appliances,Ninja,creami,new,new_test,Sample candidate item for scoring
+2026-03-09 03:34 PM EST,eBay,Sony WH-1000XM5 Headphones,220,https://example.com/sony-wh1000xm5,Electronics Accessories,Sony,wh-1000xm5,new,new_test,Sample candidate item for scoring
