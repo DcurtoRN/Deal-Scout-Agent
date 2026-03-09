@@ -25,9 +25,9 @@ def send_telegram(msg):
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
 
-print("Starting Target LEGO scan...")
+print("Starting Best Buy LEGO scan...")
 
-url = "https://www.target.com/s/lego%20construction%20site"
+url = "https://www.bestbuy.com/site/searchpage.jsp?st=lego"
 headers = {
     "User-Agent": "Mozilla/5.0"
 }
@@ -35,35 +35,25 @@ headers = {
 response = requests.get(url, headers=headers, timeout=30)
 print("Page status:", response.status_code)
 
-html = response.text
-soup = BeautifulSoup(html, "lxml")
+soup = BeautifulSoup(response.text, "lxml")
 
-# First pass: collect visible text from page
-page_text = soup.get_text("\n", strip=True)
-
-# Look for lines that mention LEGO and a price
-lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
 matches = []
 
-for i, line in enumerate(lines):
-    if "LEGO" in line and "$" in line:
+# Pull visible text lines from the whole page
+page_text = soup.get_text("\n", strip=True)
+lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
+
+for line in lines:
+    if "LEGO" in line and "$" in line and len(line) > 10:
         matches.append(line)
 
-# Backup pass: search all text chunks if first pass is sparse
-if not matches:
-    text_chunks = soup.find_all(string=True)
-    for chunk in text_chunks:
-        text = re.sub(r"\s+", " ", str(chunk)).strip()
-        if "LEGO" in text and "$" in text and len(text) > 10:
-            matches.append(text)
-
-# Remove duplicates and keep first 10
+# Remove duplicates, keep first 10
 matches = list(dict.fromkeys(matches))[:10]
 
 if matches:
-    message = "Target LEGO scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
+    message = "Best Buy LEGO scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
 else:
-    message = "Target LEGO scan ran, but still found no clean LEGO price matches on the page."
+    message = "Best Buy LEGO scan ran, but found no clean LEGO price matches."
 
 send_telegram(message)
 
