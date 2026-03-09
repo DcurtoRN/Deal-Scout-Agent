@@ -15,50 +15,56 @@ def send_telegram(msg):
 
     response = requests.post(
         url,
-        json={
-            "chat_id": chat_id,
-            "text": msg
-        },
+        json={"chat_id": chat_id, "text": msg},
         timeout=30
     )
 
     print("Telegram status:", response.status_code)
     print("Telegram response:", response.text)
 
-print("Starting Best Buy LEGO scan...")
+print("Starting Phase 1 scan...")
 
-url = "https://www.bestbuy.com/site/searchpage.jsp?st=lego"
+url = "https://www.amazon.com/gp/goldbox"
 headers = {
     "User-Agent": "Mozilla/5.0"
 }
 
-response = requests.get(url, headers=headers, timeout=30)
-print("Page status:", response.status_code)
+try:
+    response = requests.get(url, headers=headers, timeout=20)
+    print("Page status:", response.status_code)
 
-soup = BeautifulSoup(response.text, "lxml")
+    soup = BeautifulSoup(response.text, "lxml")
+    page_text = soup.get_text("\n", strip=True)
 
-matches = []
+    lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
+    matches = []
 
-# Pull visible text lines from the whole page
-page_text = soup.get_text("\n", strip=True)
-lines = [re.sub(r"\s+", " ", line).strip() for line in page_text.split("\n")]
+    for line in lines:
+        if "$" in line and len(line) > 10:
+            matches.append(line)
 
-for line in lines:
-    if "LEGO" in line and "$" in line and len(line) > 10:
-        matches.append(line)
+    matches = list(dict.fromkeys(matches))[:10]
 
-# Remove duplicates, keep first 10
-matches = list(dict.fromkeys(matches))[:10]
+    if matches:
+        message = "Phase 1 scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
+    else:
+        message = "Phase 1 scan completed, but no clean priced items were found."
 
-if matches:
-    message = "Best Buy LEGO scan results:\n\n" + "\n\n".join(f"- {m}" for m in matches)
-else:
-    message = "Best Buy LEGO scan ran, but found no clean LEGO price matches."
+    send_telegram(message)
 
-send_telegram(message)
+except requests.exceptions.Timeout:
+    error_msg = "Phase 1 scan failed: request timed out while fetching the source page."
+    print(error_msg)
+    send_telegram(error_msg)
 
-print("Matches found:", len(matches))
-for m in matches:
-    print(m)
+except requests.exceptions.RequestException as e:
+    error_msg = f"Phase 1 scan failed: request error: {str(e)}"
+    print(error_msg)
+    send_telegram(error_msg)
+
+except Exception as e:
+    error_msg = f"Phase 1 scan failed: unexpected error: {str(e)}"
+    print(error_msg)
+    send_telegram(error_msg)
 
 print("Scan finished")
