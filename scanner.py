@@ -140,6 +140,39 @@ def score_candidates(candidates, reference_lookup, watchlist_data):
     return scored, unmatched
 
 
+def append_scored_results(scored_items, path="scored_results.csv"):
+    run_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
+
+    fieldnames = [
+        "run_time", "title", "source", "category", "brand", "model_key", "condition",
+        "buy_price", "avg_resale_price", "fees", "shipping", "profit", "roi_pct",
+        "action", "confidence", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        for item in scored_items:
+            writer.writerow({
+                "run_time": run_time,
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "avg_resale_price": item["avg_resale_price"],
+                "fees": item["fees"],
+                "shipping": item["shipping"],
+                "profit": item["profit"],
+                "roi_pct": item["roi_pct"],
+                "action": item["action"],
+                "confidence": item["confidence"],
+                "url": item["url"]
+            })
+
+
 def build_message(scored_items, unmatched_items):
     current_time = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
@@ -185,7 +218,7 @@ def build_message(scored_items, unmatched_items):
         + format_items(skip_items, "SKIP")
         + "\n\nUnmatched sample:\n"
         + unmatched_text
-        + "\n\nSystem status: candidate scoring pipeline working."
+        + "\n\nSystem status: candidate scoring pipeline working and results saved to scored_results.csv."
     )
 
     return message
@@ -210,6 +243,9 @@ def main():
         reference_lookup,
         watchlist_data
     )
+
+    print("Appending scored results to scored_results.csv...")
+    append_scored_results(scored_items)
 
     print("Building Telegram message...")
     message = build_message(scored_items, unmatched_items)
