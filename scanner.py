@@ -236,11 +236,7 @@ def extract_price_from_text(text):
 
 def fetch_ebay_rss_items(query, limit=3):
     url = f"https://www.ebay.com/sch/i.html?_nkw={quote_plus(query)}&_rss=1&rt=nc"
-    print(f"Fetching eBay RSS: {query}")
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     response = requests.get(url, headers=headers, timeout=20)
     response.raise_for_status()
@@ -282,6 +278,7 @@ def build_existing_candidate_keys(candidate_rows):
 def ingest_ebay_candidates(reference_rows, candidate_rows):
     existing_keys = build_existing_candidate_keys(candidate_rows)
     ingested_count = 0
+    debug_rows = []
 
     for ref in reference_rows:
         brand = ref.get("brand", "").strip()
@@ -292,8 +289,9 @@ def ingest_ebay_candidates(reference_rows, candidate_rows):
 
         try:
             ebay_items = fetch_ebay_rss_items(query, limit=EBAY_RESULTS_PER_REFERENCE)
+            debug_rows.append(f"{query}: {len(ebay_items)} rss items")
         except Exception as e:
-            print(f"Failed eBay RSS query for {query}: {e}")
+            debug_rows.append(f"{query}: ERROR {str(e)[:80]}")
             continue
 
         for item in ebay_items:
@@ -318,7 +316,7 @@ def ingest_ebay_candidates(reference_rows, candidate_rows):
             existing_keys.add(key)
             ingested_count += 1
 
-    return candidate_rows, ingested_count
+    return candidate_rows, ingested_count, debug_rows
 
 
 def process_candidates(candidate_rows, reference_lookup, watchlist_data):
@@ -357,9 +355,7 @@ def process_candidates(candidate_rows, reference_lookup, watchlist_data):
 
 
 def update_candidate_statuses(candidate_rows, scored_items, new_buy_items):
-    scored_lookup = {
-        item["url"]: item for item in scored_items
-    }
+    scored_lookup = {item["url"]: item for item in scored_items}
     new_buy_urls = {item["url"] for item in new_buy_items}
 
     for row in candidate_rows:
@@ -384,15 +380,18 @@ def update_candidate_statuses(candidate_rows, scored_items, new_buy_items):
             row["notes"] = f"Scored as {scored_item['action']}"
 
 
-def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count, ingested_count):
+def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count, ingested_count, debug_rows):
     current_time = now_est()
+    debug_text = "\n".join(f"- {row}" for row in debug_rows[:8]) if debug_rows else "- No query debug rows"
 
     if processed_new_count == 0:
         return (
             "Deal Scout eBay ingestion check\n\n"
             f"Run time: {current_time}\n\n"
             f"New candidates ingested this run: {ingested_count}\n"
-            "No NEW candidate items to process after ingestion."
+            "No NEW candidate items to process after ingestion.\n\n"
+            "eBay query debug:\n"
+            f"{debug_text}"
         )
 
     if not all_buy_items:
@@ -402,7 +401,9 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
             f"New candidates ingested this run: {ingested_count}\n"
             f"New candidates processed: {processed_new_count}\n"
             "No BUY candidates found among new items.\n\n"
-            f"Unmatched new candidates: {len(unmatched_items)}"
+            f"Unmatched new candidates: {len(unmatched_items)}\n\n"
+            "eBay query debug:\n"
+            f"{debug_text}"
         )
 
     if not new_buy_items:
@@ -413,7 +414,9 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
             f"New candidates processed: {processed_new_count}\n"
             f"BUY candidates found among them: {len(all_buy_items)}\n"
             "New BUY alerts: 0\n\n"
-            "All BUY items in this batch were already alerted previously."
+            "All BUY items in this batch were already alerted previously.\n\n"
+            "eBay query debug:\n"
+            f"{debug_text}"
         )
 
     blocks = [
@@ -437,6 +440,8 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
         )
 
     blocks.append(f"Unmatched new candidates: {len(unmatched_items)}")
+    blocks.append("\neBay query debug:")
+    blocks.extend([f"- {row}" for row in debug_rows[:8]])
     return "\n".join(blocks)
 
 
@@ -456,7 +461,7 @@ def main():
     ]
 
     print("Ingesting fresh eBay candidates...")
-    candidate_rows, ingested_count = ingest_ebay_candidates(price_rows, candidate_rows)
+    candidate_rows, ingested_count, debug_rows = ingest_ebay_candidates(price_rows, candidate_rows)
     print(f"Ingested {ingested_count} new eBay candidates.")
 
     new_count = sum(1 for row in candidate_rows if row.get("status", "").strip().lower() == "new")
@@ -502,13 +507,14 @@ def main():
         new_buy_items,
         unmatched_items,
         new_count,
-        ingested_count
+        ingested_count,
+        debug_rows
     )
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("eBay ingestion milestone run finished")
+    print("eBay ingestion debug run finished")
 
 
 if __name__ == "__main__":
