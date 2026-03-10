@@ -3,7 +3,7 @@ import json
 import csv
 import re
 import requests
-import xml.etree.ElementTree as ET
+from bs4 import BeautifulSoup
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from urllib.parse import quote_plus
@@ -15,7 +15,7 @@ CANDIDATES_PATH = "data/candidate_items.csv"
 SCORED_RESULTS_PATH = "data/scored_results.csv"
 ALERTED_ITEMS_PATH = "data/alerted_items.csv"
 
-EBAY_RESULTS_PER_REFERENCE = 3
+AMAZON_RESULTS_PER_REFERENCE = 5
 
 
 def now_est():
@@ -217,50 +217,70 @@ def score_candidate(candidate, reference_row, rules):
     }
 
 
-def extract_price_from_text(text):
+def clean_amazon_price(text):
     if not text:
         return None
 
-    patterns = [
-        r"Current Price:\s*(?:US\s*)?\$([\d,]+(?:\.\d{2})?)",
-        r"Now:\s*(?:US\s*)?\$([\d,]+(?:\.\d{2})?)",
-        r"(?:US\s*)?\$([\d,]+(?:\.\d{2})?)"
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            return match.group(1).replace(",", "")
+    text = text.replace(",", "")
+    match = re.search(r"\$?(\d+(?:\.\d{2})?)", text)
+    if match:
+        return match.group(1)
     return None
 
 
-def fetch_ebay_rss_items(query, limit=3):
-    url = f"https://www.ebay.com/sch/i.html?_nkw={quote_plus(query)}&_rss=1&rt=nc"
-    headers = {"User-Agent": "Mozilla/5.0"}
+def fetch_amazon_search_items(query, limit=5):
+    url = f"https://www.amazon.com/s?k={quote_plus(query)}"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
 
     response = requests.get(url, headers=headers, timeout=20)
     response.raise_for_status()
 
-    root = ET.fromstring(response.content)
+    soup = BeautifulSoup(response.text, "lxml")
     items = []
 
-    for item in root.findall(".//item")[:limit]:
-        title = item.findtext("title", default="").strip()
-        link = item.findtext("link", default="").strip()
-        description = item.findtext("description", default="").strip()
+    # Amazon search result blocks often have data-component-type=s-search-result
+    results = soup.select('[data-component-type="s-search-result"]')
 
-        price = extract_price_from_text(description)
-        if not price:
-            price = extract_price_from_text(title)
+    for result in results[:limit * 3]:
+        title_el = result.select_one("h2 a span")
+        link_el = result.select_one("h2 a")
+        whole_el = result.select_one(".a-price .a-offscreen")
 
-        if not title or not link or not price:
+        if not title_el or not link_el or not whole_el:
+            continue
+
+        title = title_el.get_text(" ", strip=True)
+        href = link_el.get("href", "").strip()
+        price = clean_amazon_price(whole_el.get_text(" ", strip=True))
+
+        if not title or not href or not price:
+            continue
+
+        if not href.startswith("http"):
+            href = f"https://www.amazon.com{href}"
+
+        # Filter obvious non-product junk
+        bad_phrases = [
+            "sponsored",
+            "more results",
+            "shop now",
+            "climate pledge friendly"
+        ]
+        lowered = title.lower()
+        if any(bp in lowered for bp in bad_phrases):
             continue
 
         items.append({
             "title": title,
-            "url": link,
+            "url": href,
             "price": price
         })
+
+        if len(items) >= limit:
+            break
 
     return items
 
@@ -275,7 +295,7 @@ def build_existing_candidate_keys(candidate_rows):
     return keys
 
 
-def ingest_ebay_candidates(reference_rows, candidate_rows):
+def ingest_amazon_candidates(reference_rows, candidate_rows):
     existing_keys = build_existing_candidate_keys(candidate_rows)
     ingested_count = 0
     debug_rows = []
@@ -288,20 +308,20 @@ def ingest_ebay_candidates(reference_rows, candidate_rows):
         query = f"{brand} {model_key}"
 
         try:
-            ebay_items = fetch_ebay_rss_items(query, limit=EBAY_RESULTS_PER_REFERENCE)
-            debug_rows.append(f"{query}: {len(ebay_items)} rss items")
+            amazon_items = fetch_amazon_search_items(query, limit=AMAZON_RESULTS_PER_REFERENCE)
+            debug_rows.append(f"{query}: {len(amazon_items)} amazon items")
         except Exception as e:
             debug_rows.append(f"{query}: ERROR {str(e)[:80]}")
             continue
 
-        for item in ebay_items:
-            key = ("ebay", item["url"].strip().lower())
+        for item in amazon_items:
+            key = ("amazon", item["url"].strip().lower())
             if key in existing_keys:
                 continue
 
             candidate_rows.append({
                 "timestamp": now_est(),
-                "source": "eBay",
+                "source": "Amazon",
                 "title": item["title"],
                 "price": item["price"],
                 "url": item["url"],
@@ -310,7 +330,7 @@ def ingest_ebay_candidates(reference_rows, candidate_rows):
                 "model_key": model_key,
                 "condition": condition,
                 "status": "new",
-                "notes": f"Ingested from eBay RSS query: {query}"
+                "notes": f"Ingested from Amazon search query: {query}"
             })
 
             existing_keys.add(key)
@@ -386,41 +406,41 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
 
     if processed_new_count == 0:
         return (
-            "Deal Scout eBay ingestion check\n\n"
+            "Deal Scout Amazon ingestion check\n\n"
             f"Run time: {current_time}\n\n"
             f"New candidates ingested this run: {ingested_count}\n"
             "No NEW candidate items to process after ingestion.\n\n"
-            "eBay query debug:\n"
+            "Amazon query debug:\n"
             f"{debug_text}"
         )
 
     if not all_buy_items:
         return (
-            "Deal Scout eBay BUY alert check\n\n"
+            "Deal Scout Amazon BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
             f"New candidates ingested this run: {ingested_count}\n"
             f"New candidates processed: {processed_new_count}\n"
             "No BUY candidates found among new items.\n\n"
             f"Unmatched new candidates: {len(unmatched_items)}\n\n"
-            "eBay query debug:\n"
+            "Amazon query debug:\n"
             f"{debug_text}"
         )
 
     if not new_buy_items:
         return (
-            "Deal Scout eBay BUY alert check\n\n"
+            "Deal Scout Amazon BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
             f"New candidates ingested this run: {ingested_count}\n"
             f"New candidates processed: {processed_new_count}\n"
             f"BUY candidates found among them: {len(all_buy_items)}\n"
             "New BUY alerts: 0\n\n"
             "All BUY items in this batch were already alerted previously.\n\n"
-            "eBay query debug:\n"
+            "Amazon query debug:\n"
             f"{debug_text}"
         )
 
     blocks = [
-        "Deal Scout NEW eBay BUY alert\n",
+        "Deal Scout NEW Amazon BUY alert\n",
         f"Run time: {current_time}",
         f"New candidates ingested this run: {ingested_count}",
         f"New candidates processed: {processed_new_count}",
@@ -440,7 +460,7 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
         )
 
     blocks.append(f"Unmatched new candidates: {len(unmatched_items)}")
-    blocks.append("\neBay query debug:")
+    blocks.append("\nAmazon query debug:")
     blocks.extend([f"- {row}" for row in debug_rows[:8]])
     return "\n".join(blocks)
 
@@ -460,9 +480,9 @@ def main():
         "model_key", "condition", "status", "notes"
     ]
 
-    print("Ingesting fresh eBay candidates...")
-    candidate_rows, ingested_count, debug_rows = ingest_ebay_candidates(price_rows, candidate_rows)
-    print(f"Ingested {ingested_count} new eBay candidates.")
+    print("Ingesting fresh Amazon candidates...")
+    candidate_rows, ingested_count, debug_rows = ingest_amazon_candidates(price_rows, candidate_rows)
+    print(f"Ingested {ingested_count} new Amazon candidates.")
 
     new_count = sum(1 for row in candidate_rows if row.get("status", "").strip().lower() == "new")
     print(f"New candidates available for processing: {new_count}")
@@ -514,7 +534,7 @@ def main():
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("eBay ingestion debug run finished")
+    print("Amazon ingestion milestone run finished")
 
 
 if __name__ == "__main__":
