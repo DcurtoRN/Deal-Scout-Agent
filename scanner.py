@@ -6,6 +6,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
+WATCHLIST_PATH = "data/watchlist.json"
+PRICE_REFERENCE_PATH = "data/price_reference.csv"
+CANDIDATES_PATH = "data/candidate_items.csv"
+SCORED_RESULTS_PATH = "data/scored_results.csv"
+ALERTED_ITEMS_PATH = "data/alerted_items.csv"
+
+
 def now_est():
     return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
@@ -29,18 +36,25 @@ def send_telegram(msg):
     print("Telegram response:", response.text)
 
 
-def load_watchlist(path="data/watchlist.json"):
+def load_watchlist(path=WATCHLIST_PATH):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_csv_rows(path):
     rows = []
-    with open(path, "r", encoding="utf-8-sig") as f:
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
     return rows
+
+
+def write_csv_rows(path, fieldnames, rows):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def to_float(value, default=0.0):
@@ -59,17 +73,96 @@ def get_category_rules(watchlist_data, category_name):
 
 def build_reference_lookup(price_rows):
     lookup = {}
-
     for row in price_rows:
-        category = row.get("category", "").strip().lower()
-        brand = row.get("brand", "").strip().lower()
-        model_key = row.get("model_key", "").strip().lower()
-        condition = row.get("condition", "").strip().lower()
-
-        key = (category, brand, model_key, condition)
+        key = (
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+        )
         lookup[key] = row
-
     return lookup
+
+
+def build_alert_key(item):
+    return (
+        item.get("source", "").strip().lower(),
+        item.get("category", "").strip().lower(),
+        item.get("brand", "").strip().lower(),
+        item.get("model_key", "").strip().lower(),
+        item.get("condition", "").strip().lower(),
+        str(item.get("buy_price", "")).strip(),
+    )
+
+
+def load_alerted_keys(path=ALERTED_ITEMS_PATH):
+    keys = set()
+    rows = load_csv_rows(path)
+    for row in rows:
+        keys.add((
+            row.get("source", "").strip().lower(),
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+            str(row.get("buy_price", "")).strip(),
+        ))
+    return keys
+
+
+def append_alerted_items(items, path=ALERTED_ITEMS_PATH):
+    fieldnames = [
+        "alert_time", "title", "source", "category", "brand",
+        "model_key", "condition", "buy_price", "action", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        for item in items:
+            writer.writerow({
+                "alert_time": now_est(),
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "action": item["action"],
+                "url": item["url"]
+            })
+
+
+def append_scored_results(scored_items, path=SCORED_RESULTS_PATH):
+    run_time = now_est()
+
+    fieldnames = [
+        "run_time", "title", "source", "category", "brand", "model_key", "condition",
+        "buy_price", "avg_resale_price", "fees", "shipping", "profit", "roi_pct",
+        "action", "confidence", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        for item in scored_items:
+            writer.writerow({
+                "run_time": run_time,
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "avg_resale_price": item["avg_resale_price"],
+                "fees": item["fees"],
+                "shipping": item["shipping"],
+                "profit": item["profit"],
+                "roi_pct": item["roi_pct"],
+                "action": item["action"],
+                "confidence": item["confidence"],
+                "url": item["url"]
+            })
 
 
 def score_candidate(candidate, reference_row, rules):
@@ -116,160 +209,171 @@ def score_candidate(candidate, reference_row, rules):
         "roi_pct": round(roi * 100, 1),
         "action": action,
         "confidence": reference_row.get("confidence", "unknown"),
-        "min_roi_pct": round(min_roi * 100, 1),
-        "min_profit": round(min_profit, 2)
     }
 
 
-def score_candidates(candidates, reference_lookup, watchlist_data):
-    scored = []
-    unmatched = []
+def process_candidates(candidate_rows, reference_lookup, watchlist_data):
+    scored_items = []
+    unmatched_items = []
 
-    for candidate in candidates:
-        category = candidate.get("category", "").strip().lower()
-        brand = candidate.get("brand", "").strip().lower()
-        model_key = candidate.get("model_key", "").strip().lower()
-        condition = candidate.get("condition", "").strip().lower()
+    for row in candidate_rows:
+        status = row.get("status", "").strip().lower()
+        if status != "new":
+            continue
 
-        key = (category, brand, model_key, condition)
+        key = (
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+        )
+
         reference_row = reference_lookup.get(key)
 
         if not reference_row:
-            unmatched.append(candidate)
+            row["status"] = "unmatched"
+            row["notes"] = "No matching reference row found"
+            unmatched_items.append(row)
             continue
 
-        rules = get_category_rules(watchlist_data, candidate.get("category", ""))
-        scored.append(score_candidate(candidate, reference_row, rules))
+        rules = get_category_rules(watchlist_data, row.get("category", ""))
+        scored = score_candidate(row, reference_row, rules)
+        scored_items.append(scored)
 
-    return scored, unmatched
+        if scored["action"] == "BUY":
+            # status updated later after dedupe check
+            pass
+        else:
+            row["status"] = "scored"
+            row["notes"] = f"Scored as {scored['action']}"
 
-
-def append_scored_results(scored_items, path="data/scored_results.csv"):
-    run_time = now_est()
-
-    fieldnames = [
-        "run_time", "title", "source", "category", "brand", "model_key", "condition",
-        "buy_price", "avg_resale_price", "fees", "shipping", "profit", "roi_pct",
-        "action", "confidence", "url"
-    ]
-
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        for item in scored_items:
-            writer.writerow({
-                "run_time": run_time,
-                "title": item["title"],
-                "source": item["source"],
-                "category": item["category"],
-                "brand": item["brand"],
-                "model_key": item["model_key"],
-                "condition": item["condition"],
-                "buy_price": item["buy_price"],
-                "avg_resale_price": item["avg_resale_price"],
-                "fees": item["fees"],
-                "shipping": item["shipping"],
-                "profit": item["profit"],
-                "roi_pct": item["roi_pct"],
-                "action": item["action"],
-                "confidence": item["confidence"],
-                "url": item["url"]
-            })
+    return scored_items, unmatched_items, candidate_rows
 
 
-def build_alert_key(item):
-    return (
-        item.get("source", "").strip().lower(),
-        item.get("category", "").strip().lower(),
-        item.get("brand", "").strip().lower(),
-        item.get("model_key", "").strip().lower(),
-        item.get("condition", "").strip().lower(),
-        str(item.get("buy_price", "")).strip()
-    )
+def update_candidate_statuses_for_new_buys(candidate_rows, new_buy_items):
+    new_buy_keys = {
+        (
+            item["source"].strip().lower(),
+            item["category"].strip().lower(),
+            item["brand"].strip().lower(),
+            item["model_key"].strip().lower(),
+            item["condition"].strip().lower(),
+            str(item["buy_price"]).strip(),
+        )
+        for item in new_buy_items
+    }
 
+    for row in candidate_rows:
+        if row.get("status", "").strip().lower() != "new":
+            continue
 
-def load_alerted_keys(path="data/alerted_items.csv"):
-    keys = set()
-    rows = load_csv_rows(path)
-
-    for row in rows:
         key = (
             row.get("source", "").strip().lower(),
             row.get("category", "").strip().lower(),
             row.get("brand", "").strip().lower(),
             row.get("model_key", "").strip().lower(),
             row.get("condition", "").strip().lower(),
-            str(row.get("buy_price", "")).strip()
+            str(to_float(row.get("price"))).rstrip("0").rstrip(".") if "." in str(to_float(row.get("price"))) else str(to_float(row.get("price"))),
         )
-        keys.add(key)
 
-    return keys
+        # buy_price in scored items is rounded numeric, normalize both sides:
+        alt_key = (
+            row.get("source", "").strip().lower(),
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+            str(round(to_float(row.get("price")), 2)),
+        )
 
-
-def append_alerted_items(items, path="data/alerted_items.csv"):
-    fieldnames = [
-        "alert_time", "title", "source", "category", "brand",
-        "model_key", "condition", "buy_price", "action", "url"
-    ]
-
-    with open(path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        for item in items:
-            writer.writerow({
-                "alert_time": now_est(),
-                "title": item["title"],
-                "source": item["source"],
-                "category": item["category"],
-                "brand": item["brand"],
-                "model_key": item["model_key"],
-                "condition": item["condition"],
-                "buy_price": item["buy_price"],
-                "action": item["action"],
-                "url": item["url"]
-            })
+        if key in new_buy_keys or alt_key in new_buy_keys:
+            row["status"] = "alerted"
+            row["notes"] = "BUY alert sent"
 
 
-def filter_new_buy_items(scored_items, alerted_keys):
-    buy_items = [item for item in scored_items if item["action"] == "BUY"]
-    new_buy_items = []
+def mark_existing_buys_as_scored(candidate_rows, scored_items, new_buy_items):
+    new_buy_lookup = {
+        (
+            item["source"].strip().lower(),
+            item["category"].strip().lower(),
+            item["brand"].strip().lower(),
+            item["model_key"].strip().lower(),
+            item["condition"].strip().lower(),
+            str(item["buy_price"]).strip(),
+        )
+        for item in new_buy_items
+    }
 
-    for item in buy_items:
-        key = build_alert_key(item)
-        if key not in alerted_keys:
-            new_buy_items.append(item)
+    for row in candidate_rows:
+        if row.get("status", "").strip().lower() != "new":
+            continue
 
-    return buy_items, new_buy_items
+        candidate_buy_key = (
+            row.get("source", "").strip().lower(),
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+            str(round(to_float(row.get("price")), 2)),
+        )
+
+        if candidate_buy_key in new_buy_lookup:
+            continue
+
+        # if it was a BUY but already alerted before, mark as alerted
+        for item in scored_items:
+            item_key = (
+                item["source"].strip().lower(),
+                item["category"].strip().lower(),
+                item["brand"].strip().lower(),
+                item["model_key"].strip().lower(),
+                item["condition"].strip().lower(),
+                str(item["buy_price"]).strip(),
+            )
+            row_key = candidate_buy_key
+
+            if item_key == row_key and item["action"] == "BUY":
+                row["status"] = "alerted"
+                row["notes"] = "BUY item already alerted previously"
+                break
 
 
-def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
+def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count):
     current_time = now_est()
+
+    if processed_new_count == 0:
+        return (
+            "Deal Scout status check\n\n"
+            f"Run time: {current_time}\n\n"
+            "No NEW candidate items to process this run."
+        )
 
     if not all_buy_items:
         return (
             "Deal Scout BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
-            "No BUY candidates found this run.\n\n"
-            f"Unmatched candidates: {len(unmatched_items)}\n"
-            "All scored items were still saved to data/scored_results.csv."
+            f"New candidates processed: {processed_new_count}\n"
+            "No BUY candidates found among new items.\n\n"
+            f"Unmatched new candidates: {len(unmatched_items)}\n"
+            "Scored results were saved."
         )
 
     if not new_buy_items:
         return (
             "Deal Scout BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
-            f"BUY candidates found: {len(all_buy_items)}\n"
+            f"New candidates processed: {processed_new_count}\n"
+            f"BUY candidates found among them: {len(all_buy_items)}\n"
             "New BUY alerts: 0\n\n"
-            "All BUY items this run were already alerted previously.\n\n"
-            f"Unmatched candidates: {len(unmatched_items)}\n"
-            "All scored items were still saved to data/scored_results.csv."
+            "All BUY items in this batch were already alerted previously."
         )
 
     blocks = [
         "Deal Scout NEW BUY alert\n",
-        f"Run time: {current_time}\n",
-        f"BUY candidates found this run: {len(all_buy_items)}",
-        f"New BUY alerts sent: {len(new_buy_items)}\n"
+        f"Run time: {current_time}",
+        f"New candidates processed: {processed_new_count}",
+        f"BUY candidates found in batch: {len(all_buy_items)}",
+        f"New BUY alerts sent: {len(new_buy_items)}\n",
     ]
 
     for item in new_buy_items:
@@ -283,55 +387,69 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items):
             f"  Link: {item['url']}\n"
         )
 
-    blocks.append(f"Unmatched candidates: {len(unmatched_items)}")
-    blocks.append("Scored results saved to data/scored_results.csv.")
-    blocks.append("New BUY alerts saved to data/alerted_items.csv.")
-
+    blocks.append(f"Unmatched new candidates: {len(unmatched_items)}")
     return "\n".join(blocks)
 
 
 def main():
-    print("Loading data/watchlist.json...")
-    watchlist_data = load_watchlist("data/watchlist.json")
+    print("Loading watchlist...")
+    watchlist_data = load_watchlist()
 
-    print("Loading data/price_reference.csv...")
-    price_rows = load_csv_rows("data/price_reference.csv")
+    print("Loading reference pricing...")
+    price_rows = load_csv_rows(PRICE_REFERENCE_PATH)
 
-    print("Loading data/candidate_items.csv...")
-    candidate_rows = load_csv_rows("data/candidate_items.csv")
+    print("Loading candidates...")
+    candidate_rows = load_csv_rows(CANDIDATES_PATH)
+    candidate_fieldnames = list(candidate_rows[0].keys()) if candidate_rows else [
+        "timestamp", "source", "title", "price", "url", "category", "brand",
+        "model_key", "condition", "status", "notes"
+    ]
+
+    new_count = sum(1 for row in candidate_rows if row.get("status", "").strip().lower() == "new")
+    print(f"New candidates found in file: {new_count}")
 
     print("Building reference lookup...")
     reference_lookup = build_reference_lookup(price_rows)
 
-    print("Scoring candidates...")
-    scored_items, unmatched_items = score_candidates(
+    print("Processing new candidates...")
+    scored_items, unmatched_items, candidate_rows = process_candidates(
         candidate_rows,
         reference_lookup,
         watchlist_data
     )
 
-    print("Appending scored results to data/scored_results.csv...")
-    append_scored_results(scored_items, "data/scored_results.csv")
+    if scored_items:
+        print("Appending scored results...")
+        append_scored_results(scored_items, SCORED_RESULTS_PATH)
+    else:
+        print("No scored items to append.")
 
-    print("Loading previously alerted BUY items...")
-    alerted_keys = load_alerted_keys("data/alerted_items.csv")
+    print("Loading alert history...")
+    alerted_keys = load_alerted_keys(ALERTED_ITEMS_PATH)
 
-    print("Filtering BUY items against alert history...")
-    all_buy_items, new_buy_items = filter_new_buy_items(scored_items, alerted_keys)
+    all_buy_items = [item for item in scored_items if item["action"] == "BUY"]
+    new_buy_items = [item for item in all_buy_items if build_alert_key(item) not in alerted_keys]
 
     if new_buy_items:
-        print("Appending new BUY alerts to data/alerted_items.csv...")
-        append_alerted_items(new_buy_items, "data/alerted_items.csv")
+        print("Saving new BUY alerts...")
+        append_alerted_items(new_buy_items, ALERTED_ITEMS_PATH)
     else:
         print("No new BUY alerts to save.")
 
+    print("Updating candidate statuses...")
+    update_candidate_statuses_for_new_buys(candidate_rows, new_buy_items)
+    mark_existing_buys_as_scored(candidate_rows, scored_items, new_buy_items)
+
+    print("Writing updated candidate_items.csv...")
+    write_csv_rows(CANDIDATES_PATH, candidate_fieldnames, candidate_rows)
+
     print("Building Telegram message...")
-    message = build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items)
+    message = build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, new_count)
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("Alert suppression run finished")
+    print("Status management run finished")
 
 
 if __name__ == "__main__":
