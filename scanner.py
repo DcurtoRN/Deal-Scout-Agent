@@ -1,9 +1,12 @@
 import os
 import json
 import csv
+import re
 import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from urllib.parse import quote_plus
 
 
 WATCHLIST_PATH = "data/watchlist.json"
@@ -11,6 +14,8 @@ PRICE_REFERENCE_PATH = "data/price_reference.csv"
 CANDIDATES_PATH = "data/candidate_items.csv"
 SCORED_RESULTS_PATH = "data/scored_results.csv"
 ALERTED_ITEMS_PATH = "data/alerted_items.csv"
+
+EBAY_RESULTS_PER_REFERENCE = 3
 
 
 def now_est():
@@ -212,6 +217,110 @@ def score_candidate(candidate, reference_row, rules):
     }
 
 
+def extract_price_from_text(text):
+    if not text:
+        return None
+
+    patterns = [
+        r"Current Price:\s*(?:US\s*)?\$([\d,]+(?:\.\d{2})?)",
+        r"Now:\s*(?:US\s*)?\$([\d,]+(?:\.\d{2})?)",
+        r"(?:US\s*)?\$([\d,]+(?:\.\d{2})?)"
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).replace(",", "")
+    return None
+
+
+def fetch_ebay_rss_items(query, limit=3):
+    url = f"https://www.ebay.com/sch/i.html?_nkw={quote_plus(query)}&_rss=1&rt=nc"
+    print(f"Fetching eBay RSS: {query}")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
+
+    root = ET.fromstring(response.content)
+    items = []
+
+    for item in root.findall(".//item")[:limit]:
+        title = item.findtext("title", default="").strip()
+        link = item.findtext("link", default="").strip()
+        description = item.findtext("description", default="").strip()
+
+        price = extract_price_from_text(description)
+        if not price:
+            price = extract_price_from_text(title)
+
+        if not title or not link or not price:
+            continue
+
+        items.append({
+            "title": title,
+            "url": link,
+            "price": price
+        })
+
+    return items
+
+
+def build_existing_candidate_keys(candidate_rows):
+    keys = set()
+    for row in candidate_rows:
+        keys.add((
+            row.get("source", "").strip().lower(),
+            row.get("url", "").strip().lower()
+        ))
+    return keys
+
+
+def ingest_ebay_candidates(reference_rows, candidate_rows):
+    existing_keys = build_existing_candidate_keys(candidate_rows)
+    ingested_count = 0
+
+    for ref in reference_rows:
+        brand = ref.get("brand", "").strip()
+        model_key = ref.get("model_key", "").strip()
+        category = ref.get("category", "").strip()
+        condition = ref.get("condition", "new").strip()
+        query = f"{brand} {model_key}"
+
+        try:
+            ebay_items = fetch_ebay_rss_items(query, limit=EBAY_RESULTS_PER_REFERENCE)
+        except Exception as e:
+            print(f"Failed eBay RSS query for {query}: {e}")
+            continue
+
+        for item in ebay_items:
+            key = ("ebay", item["url"].strip().lower())
+            if key in existing_keys:
+                continue
+
+            candidate_rows.append({
+                "timestamp": now_est(),
+                "source": "eBay",
+                "title": item["title"],
+                "price": item["price"],
+                "url": item["url"],
+                "category": category,
+                "brand": brand,
+                "model_key": model_key,
+                "condition": condition,
+                "status": "new",
+                "notes": f"Ingested from eBay RSS query: {query}"
+            })
+
+            existing_keys.add(key)
+            ingested_count += 1
+
+    return candidate_rows, ingested_count
+
+
 def process_candidates(candidate_rows, reference_lookup, watchlist_data):
     scored_items = []
     unmatched_items = []
@@ -240,128 +349,67 @@ def process_candidates(candidate_rows, reference_lookup, watchlist_data):
         scored = score_candidate(row, reference_row, rules)
         scored_items.append(scored)
 
-        if scored["action"] == "BUY":
-            # status updated later after dedupe check
-            pass
-        else:
+        if scored["action"] in ("WATCH", "SKIP"):
             row["status"] = "scored"
             row["notes"] = f"Scored as {scored['action']}"
 
     return scored_items, unmatched_items, candidate_rows
 
 
-def update_candidate_statuses_for_new_buys(candidate_rows, new_buy_items):
-    new_buy_keys = {
-        (
-            item["source"].strip().lower(),
-            item["category"].strip().lower(),
-            item["brand"].strip().lower(),
-            item["model_key"].strip().lower(),
-            item["condition"].strip().lower(),
-            str(item["buy_price"]).strip(),
-        )
-        for item in new_buy_items
+def update_candidate_statuses(candidate_rows, scored_items, new_buy_items):
+    scored_lookup = {
+        item["url"]: item for item in scored_items
     }
+    new_buy_urls = {item["url"] for item in new_buy_items}
 
     for row in candidate_rows:
         if row.get("status", "").strip().lower() != "new":
             continue
 
-        key = (
-            row.get("source", "").strip().lower(),
-            row.get("category", "").strip().lower(),
-            row.get("brand", "").strip().lower(),
-            row.get("model_key", "").strip().lower(),
-            row.get("condition", "").strip().lower(),
-            str(to_float(row.get("price"))).rstrip("0").rstrip(".") if "." in str(to_float(row.get("price"))) else str(to_float(row.get("price"))),
-        )
+        row_url = row.get("url", "")
+        scored_item = scored_lookup.get(row_url)
 
-        # buy_price in scored items is rounded numeric, normalize both sides:
-        alt_key = (
-            row.get("source", "").strip().lower(),
-            row.get("category", "").strip().lower(),
-            row.get("brand", "").strip().lower(),
-            row.get("model_key", "").strip().lower(),
-            row.get("condition", "").strip().lower(),
-            str(round(to_float(row.get("price")), 2)),
-        )
-
-        if key in new_buy_keys or alt_key in new_buy_keys:
-            row["status"] = "alerted"
-            row["notes"] = "BUY alert sent"
-
-
-def mark_existing_buys_as_scored(candidate_rows, scored_items, new_buy_items):
-    new_buy_lookup = {
-        (
-            item["source"].strip().lower(),
-            item["category"].strip().lower(),
-            item["brand"].strip().lower(),
-            item["model_key"].strip().lower(),
-            item["condition"].strip().lower(),
-            str(item["buy_price"]).strip(),
-        )
-        for item in new_buy_items
-    }
-
-    for row in candidate_rows:
-        if row.get("status", "").strip().lower() != "new":
+        if not scored_item:
             continue
 
-        candidate_buy_key = (
-            row.get("source", "").strip().lower(),
-            row.get("category", "").strip().lower(),
-            row.get("brand", "").strip().lower(),
-            row.get("model_key", "").strip().lower(),
-            row.get("condition", "").strip().lower(),
-            str(round(to_float(row.get("price")), 2)),
-        )
-
-        if candidate_buy_key in new_buy_lookup:
-            continue
-
-        # if it was a BUY but already alerted before, mark as alerted
-        for item in scored_items:
-            item_key = (
-                item["source"].strip().lower(),
-                item["category"].strip().lower(),
-                item["brand"].strip().lower(),
-                item["model_key"].strip().lower(),
-                item["condition"].strip().lower(),
-                str(item["buy_price"]).strip(),
-            )
-            row_key = candidate_buy_key
-
-            if item_key == row_key and item["action"] == "BUY":
+        if scored_item["action"] == "BUY":
+            if row_url in new_buy_urls:
+                row["status"] = "alerted"
+                row["notes"] = "BUY alert sent"
+            else:
                 row["status"] = "alerted"
                 row["notes"] = "BUY item already alerted previously"
-                break
+        else:
+            row["status"] = "scored"
+            row["notes"] = f"Scored as {scored_item['action']}"
 
 
-def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count):
+def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count, ingested_count):
     current_time = now_est()
 
     if processed_new_count == 0:
         return (
-            "Deal Scout status check\n\n"
+            "Deal Scout eBay ingestion check\n\n"
             f"Run time: {current_time}\n\n"
-            "No NEW candidate items to process this run."
+            f"New candidates ingested this run: {ingested_count}\n"
+            "No NEW candidate items to process after ingestion."
         )
 
     if not all_buy_items:
         return (
-            "Deal Scout BUY alert check\n\n"
+            "Deal Scout eBay BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
+            f"New candidates ingested this run: {ingested_count}\n"
             f"New candidates processed: {processed_new_count}\n"
             "No BUY candidates found among new items.\n\n"
-            f"Unmatched new candidates: {len(unmatched_items)}\n"
-            "Scored results were saved."
+            f"Unmatched new candidates: {len(unmatched_items)}"
         )
 
     if not new_buy_items:
         return (
-            "Deal Scout BUY alert check\n\n"
+            "Deal Scout eBay BUY alert check\n\n"
             f"Run time: {current_time}\n\n"
+            f"New candidates ingested this run: {ingested_count}\n"
             f"New candidates processed: {processed_new_count}\n"
             f"BUY candidates found among them: {len(all_buy_items)}\n"
             "New BUY alerts: 0\n\n"
@@ -369,8 +417,9 @@ def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, proce
         )
 
     blocks = [
-        "Deal Scout NEW BUY alert\n",
+        "Deal Scout NEW eBay BUY alert\n",
         f"Run time: {current_time}",
+        f"New candidates ingested this run: {ingested_count}",
         f"New candidates processed: {processed_new_count}",
         f"BUY candidates found in batch: {len(all_buy_items)}",
         f"New BUY alerts sent: {len(new_buy_items)}\n",
@@ -400,13 +449,18 @@ def main():
 
     print("Loading candidates...")
     candidate_rows = load_csv_rows(CANDIDATES_PATH)
+
     candidate_fieldnames = list(candidate_rows[0].keys()) if candidate_rows else [
         "timestamp", "source", "title", "price", "url", "category", "brand",
         "model_key", "condition", "status", "notes"
     ]
 
+    print("Ingesting fresh eBay candidates...")
+    candidate_rows, ingested_count = ingest_ebay_candidates(price_rows, candidate_rows)
+    print(f"Ingested {ingested_count} new eBay candidates.")
+
     new_count = sum(1 for row in candidate_rows if row.get("status", "").strip().lower() == "new")
-    print(f"New candidates found in file: {new_count}")
+    print(f"New candidates available for processing: {new_count}")
 
     print("Building reference lookup...")
     reference_lookup = build_reference_lookup(price_rows)
@@ -437,19 +491,24 @@ def main():
         print("No new BUY alerts to save.")
 
     print("Updating candidate statuses...")
-    update_candidate_statuses_for_new_buys(candidate_rows, new_buy_items)
-    mark_existing_buys_as_scored(candidate_rows, scored_items, new_buy_items)
+    update_candidate_statuses(candidate_rows, scored_items, new_buy_items)
 
     print("Writing updated candidate_items.csv...")
     write_csv_rows(CANDIDATES_PATH, candidate_fieldnames, candidate_rows)
 
     print("Building Telegram message...")
-    message = build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, new_count)
+    message = build_buy_alert_message(
+        all_buy_items,
+        new_buy_items,
+        unmatched_items,
+        new_count,
+        ingested_count
+    )
 
     print("Sending Telegram message...")
     send_telegram(message)
 
-    print("Status management run finished")
+    print("eBay ingestion milestone run finished")
 
 
 if __name__ == "__main__":
