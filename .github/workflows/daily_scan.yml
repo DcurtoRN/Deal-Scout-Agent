@@ -1,49 +1,41 @@
-{
-  "categories": [
-    {
-      "name": "LEGO",
-      "keywords": ["lego", "lego technic", "lego star wars", "lego creator", "lego city"],
-      "min_roi": 0.30,
-      "min_profit": 15,
-      "estimated_fee_pct": 0.15,
-      "estimated_shipping": 8,
-      "notes": "Usually easier to match by set number. Good collector demand."
-    },
-    {
-      "name": "Power Tools",
-      "keywords": ["milwaukee", "dewalt", "makita", "bosch", "ridgid"],
-      "min_roi": 0.25,
-      "min_profit": 20,
-      "estimated_fee_pct": 0.15,
-      "estimated_shipping": 12,
-      "notes": "Model matching matters. Shipping is often higher."
-    },
-    {
-      "name": "Pokemon Cards",
-      "keywords": ["pokemon etb", "pokemon booster box", "pokemon booster bundle", "pokemon elite trainer box"],
-      "min_roi": 0.30,
-      "min_profit": 15,
-      "estimated_fee_pct": 0.13,
-      "estimated_shipping": 6,
-      "notes": "Condition and exact product type matter a lot."
-    },
-    {
-      "name": "Small Appliances",
-      "keywords": ["ninja", "air fryer", "instant pot", "blender", "keurig"],
-      "min_roi": 0.25,
-      "min_profit": 20,
-      "estimated_fee_pct": 0.15,
-      "estimated_shipping": 10,
-      "notes": "Watch for bulky shipping and frequent discounting."
-    },
-    {
-      "name": "Electronics Accessories",
-      "keywords": ["sony headphones", "earbuds", "ssd", "router", "webcam", "power bank"],
-      "min_roi": 0.25,
-      "min_profit": 15,
-      "estimated_fee_pct": 0.15,
-      "estimated_shipping": 7,
-      "notes": "Need to avoid generic junk and counterfeit risk."
-    }
-  ]
-}
+name: Deal Scout
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 11 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python ./scanner.py
+
+      - name: Commit updated data files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/scored_results.csv data/alerted_items.csv data/candidate_items.csv
+          git diff --staged --quiet || git commit -m "Update deal scout state [skip ci]"
+          git push
