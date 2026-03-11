@@ -1,39 +1,64 @@
-name: Deal Scout
+import os
+import json
+import csv
+import re
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from urllib.parse import quote_plus
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "15 11 * * *"
 
-permissions:
-  contents: write
+WATCHLIST_PATH = "data/watchlist.json"
+PRICE_REFERENCE_PATH = "data/price_reference.csv"
+CANDIDATES_PATH = "data/candidate_items.csv"
+SCORED_RESULTS_PATH = "data/scored_results.csv"
+ALERTED_ITEMS_PATH = "data/alerted_items.csv"
 
-jobs:
-  run-agent:
-    runs-on: ubuntu-latest
+AMAZON_RESULTS_PER_REFERENCE = 5
 
-    steps:
-      - name: Checkout Repo
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+def now_est():
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %I:%M %p EST")
 
-      - name: Install packages
-        run: pip install -r requirements.txt
 
-      - name: Run scanner
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ./scanner.py
+def send_telegram(msg):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
-      - name: Commit updated CSV files
-        run: |
+    if not token or not chat_id:
+        print("Missing Telegram config")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    response = requests.post(
+        url,
+        json={"chat_id": chat_id, "text": msg},
+        timeout=30
+    )
+
+    print("Telegram status:", response.status_code)
+    print("Telegram response:", response.text)
+
+
+def load_watchlist(path=WATCHLIST_PATH):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_csv_rows(path):
+    rows = []
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    return rows
+
+
+def write_csv_rows(path, fieldnames, rows):
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/scored_results.csv data/alerted_items.csv data/candidate_items.csv
