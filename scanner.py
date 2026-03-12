@@ -15,7 +15,8 @@ CANDIDATES_PATH = "data/candidate_items.csv"
 SCORED_RESULTS_PATH = "data/scored_results.csv"
 ALERTED_ITEMS_PATH = "data/alerted_items.csv"
 
-AMAZON_RESULTS_PER_REFERENCE = 5
+AMAZON_RESULTS_PER_KEYWORD = 5
+AMAZON_MIN_PRICE = 15.0
 
 
 def now_est():
@@ -59,3 +60,521 @@ def write_csv_rows(path, fieldnames, rows):
     with open(path, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+        writer.writerows(rows)
+
+
+def to_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def get_category_rules(watchlist_data, category_name):
+    for category in watchlist_data.get("categories", []):
+        if category.get("name", "").strip().lower() == category_name.strip().lower():
+            return category
+    return None
+
+
+def build_reference_lookup(price_rows):
+    lookup = {}
+    for row in price_rows:
+        key = (
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+        )
+        lookup[key] = row
+    return lookup
+
+
+def build_alert_key(item):
+    return (
+        item.get("source", "").strip().lower(),
+        item.get("category", "").strip().lower(),
+        item.get("brand", "").strip().lower(),
+        item.get("model_key", "").strip().lower(),
+        item.get("condition", "").strip().lower(),
+        str(item.get("buy_price", "")).strip(),
+    )
+
+
+def load_alerted_keys(path=ALERTED_ITEMS_PATH):
+    keys = set()
+    rows = load_csv_rows(path)
+    for row in rows:
+        keys.add((
+            row.get("source", "").strip().lower(),
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+            str(row.get("buy_price", "")).strip(),
+        ))
+    return keys
+
+
+def append_alerted_items(items, path=ALERTED_ITEMS_PATH):
+    fieldnames = [
+        "alert_time", "title", "source", "category", "brand",
+        "model_key", "condition", "buy_price", "action", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        for item in items:
+            writer.writerow({
+                "alert_time": now_est(),
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "action": item["action"],
+                "url": item["url"]
+            })
+
+
+def append_scored_results(scored_items, path=SCORED_RESULTS_PATH):
+    run_time = now_est()
+
+    fieldnames = [
+        "run_time", "title", "source", "category", "brand", "model_key", "condition",
+        "buy_price", "avg_resale_price", "fees", "shipping", "profit", "roi_pct",
+        "action", "confidence", "url"
+    ]
+
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        for item in scored_items:
+            writer.writerow({
+                "run_time": run_time,
+                "title": item["title"],
+                "source": item["source"],
+                "category": item["category"],
+                "brand": item["brand"],
+                "model_key": item["model_key"],
+                "condition": item["condition"],
+                "buy_price": item["buy_price"],
+                "avg_resale_price": item["avg_resale_price"],
+                "fees": item["fees"],
+                "shipping": item["shipping"],
+                "profit": item["profit"],
+                "roi_pct": item["roi_pct"],
+                "action": item["action"],
+                "confidence": item["confidence"],
+                "url": item["url"]
+            })
+
+
+def score_candidate(candidate, reference_row, rules):
+    category = candidate.get("category", "Unknown")
+    brand = candidate.get("brand", "Unknown")
+    model_key = candidate.get("model_key", "Unknown")
+    title = candidate.get("title", "Unknown")
+    source = candidate.get("source", "Unknown")
+    url = candidate.get("url", "")
+    condition = candidate.get("condition", "unknown")
+
+    buy_price = to_float(candidate.get("price"))
+    avg_resale_price = to_float(reference_row.get("avg_resale_price"))
+    fee_pct = to_float(reference_row.get("estimated_fee_pct"))
+    shipping = to_float(reference_row.get("estimated_shipping"))
+
+    fees = avg_resale_price * fee_pct
+    profit = avg_resale_price - buy_price - fees - shipping
+    roi = (profit / buy_price) if buy_price > 0 else 0
+
+    min_roi = to_float(rules.get("min_roi", 0.30)) if rules else 0.30
+    min_profit = to_float(rules.get("min_profit", 15)) if rules else 15
+
+    if profit >= min_profit and roi >= min_roi:
+        action = "BUY"
+    elif profit > 0 and roi >= (min_roi * 0.5):
+        action = "WATCH"
+    else:
+        action = "SKIP"
+
+    return {
+        "title": title,
+        "source": source,
+        "url": url,
+        "category": category,
+        "brand": brand,
+        "model_key": model_key,
+        "condition": condition,
+        "buy_price": round(buy_price, 2),
+        "avg_resale_price": round(avg_resale_price, 2),
+        "fees": round(fees, 2),
+        "shipping": round(shipping, 2),
+        "profit": round(profit, 2),
+        "roi_pct": round(roi * 100, 1),
+        "action": action,
+        "confidence": reference_row.get("confidence", "unknown"),
+    }
+
+
+def clean_price(text):
+    if not text:
+        return None
+    text = text.replace(",", "")
+    match = re.search(r"\$?(\d+(?:\.\d{2})?)", text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def infer_brand_model_from_title(title, reference_rows, category_name):
+    lowered = title.lower()
+
+    best_match = None
+    best_score = 0
+
+    for ref in reference_rows:
+        if ref.get("category", "").strip().lower() != category_name.strip().lower():
+            continue
+
+        brand = ref.get("brand", "").strip()
+        model_key = ref.get("model_key", "").strip()
+
+        score = 0
+        if brand and brand.lower() in lowered:
+            score += 1
+        if model_key and model_key.lower() in lowered:
+            score += 2
+
+        if score > best_score:
+            best_score = score
+            best_match = ref
+
+    return best_match
+
+
+def fetch_amazon_search_items(query, limit=5):
+    # Try deal-filtered search first
+    url = f"https://www.amazon.com/s?k={quote_plus(query)}&deal=1"
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+
+    response = requests.get(url, headers=headers, timeout=20)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "lxml")
+    items = []
+
+    results = soup.select('[data-component-type="s-search-result"]')
+
+    for result in results[:limit * 4]:
+        title_el = result.select_one("h2 a span")
+        link_el = result.select_one("h2 a")
+        price_el = result.select_one(".a-price .a-offscreen")
+
+        if not title_el or not link_el or not price_el:
+            continue
+
+        title = title_el.get_text(" ", strip=True)
+        href = link_el.get("href", "").strip()
+        price = clean_price(price_el.get_text(" ", strip=True))
+
+        if not title or not href or not price:
+            continue
+
+        if not href.startswith("http"):
+            href = f"https://www.amazon.com{href}"
+
+        price_num = to_float(price)
+        if price_num < AMAZON_MIN_PRICE:
+            continue
+
+        lowered = title.lower()
+        bad_phrases = [
+            "sponsored",
+            "shop now",
+            "more results",
+            "climate pledge friendly"
+        ]
+        if any(bp in lowered for bp in bad_phrases):
+            continue
+
+        items.append({
+            "title": title,
+            "url": href,
+            "price": price
+        })
+
+        if len(items) >= limit:
+            break
+
+    return items
+
+
+def build_existing_candidate_keys(candidate_rows):
+    keys = set()
+    for row in candidate_rows:
+        keys.add((
+            row.get("source", "").strip().lower(),
+            row.get("url", "").strip().lower()
+        ))
+    return keys
+
+
+def ingest_amazon_candidates(watchlist_data, reference_rows, candidate_rows):
+    existing_keys = build_existing_candidate_keys(candidate_rows)
+    ingested_count = 0
+    debug_rows = []
+
+    categories = watchlist_data.get("categories", [])
+
+    for category in categories:
+        category_name = category.get("name", "").strip()
+        keywords = category.get("keywords", [])
+
+        for keyword in keywords[:3]:
+            query = keyword
+
+            try:
+                amazon_items = fetch_amazon_search_items(query, limit=AMAZON_RESULTS_PER_KEYWORD)
+                debug_rows.append(f"{query}: {len(amazon_items)} amazon items")
+            except Exception as e:
+                debug_rows.append(f"{query}: ERROR {str(e)[:80]}")
+                continue
+
+            for item in amazon_items:
+                key = ("amazon", item["url"].strip().lower())
+                if key in existing_keys:
+                    continue
+
+                matched_ref = infer_brand_model_from_title(item["title"], reference_rows, category_name)
+                if not matched_ref:
+                    continue
+
+                candidate_rows.append({
+                    "timestamp": now_est(),
+                    "source": "Amazon",
+                    "title": item["title"],
+                    "price": item["price"],
+                    "url": item["url"],
+                    "category": matched_ref.get("category", category_name),
+                    "brand": matched_ref.get("brand", ""),
+                    "model_key": matched_ref.get("model_key", ""),
+                    "condition": matched_ref.get("condition", "new"),
+                    "status": "new",
+                    "notes": f"Ingested from Amazon keyword query: {query}"
+                })
+
+                existing_keys.add(key)
+                ingested_count += 1
+
+    return candidate_rows, ingested_count, debug_rows
+
+
+def process_candidates(candidate_rows, reference_lookup, watchlist_data):
+    scored_items = []
+    unmatched_items = []
+
+    for row in candidate_rows:
+        status = row.get("status", "").strip().lower()
+        if status != "new":
+            continue
+
+        key = (
+            row.get("category", "").strip().lower(),
+            row.get("brand", "").strip().lower(),
+            row.get("model_key", "").strip().lower(),
+            row.get("condition", "").strip().lower(),
+        )
+
+        reference_row = reference_lookup.get(key)
+
+        if not reference_row:
+            row["status"] = "unmatched"
+            row["notes"] = "No matching reference row found"
+            unmatched_items.append(row)
+            continue
+
+        rules = get_category_rules(watchlist_data, row.get("category", ""))
+        scored = score_candidate(row, reference_row, rules)
+        scored_items.append(scored)
+
+        if scored["action"] in ("WATCH", "SKIP"):
+            row["status"] = "scored"
+            row["notes"] = f"Scored as {scored['action']}"
+
+    return scored_items, unmatched_items, candidate_rows
+
+
+def update_candidate_statuses(candidate_rows, scored_items, new_buy_items):
+    scored_lookup = {item["url"]: item for item in scored_items}
+    new_buy_urls = {item["url"] for item in new_buy_items}
+
+    for row in candidate_rows:
+        if row.get("status", "").strip().lower() != "new":
+            continue
+
+        row_url = row.get("url", "")
+        scored_item = scored_lookup.get(row_url)
+
+        if not scored_item:
+            continue
+
+        if scored_item["action"] == "BUY":
+            if row_url in new_buy_urls:
+                row["status"] = "alerted"
+                row["notes"] = "BUY alert sent"
+            else:
+                row["status"] = "alerted"
+                row["notes"] = "BUY item already alerted previously"
+        else:
+            row["status"] = "scored"
+            row["notes"] = f"Scored as {scored_item['action']}"
+
+
+def build_buy_alert_message(all_buy_items, new_buy_items, unmatched_items, processed_new_count, ingested_count, debug_rows):
+    current_time = now_est()
+    debug_text = "\n".join(f"- {row}" for row in debug_rows[:10]) if debug_rows else "- No query debug rows"
+
+    if processed_new_count == 0:
+        return (
+            "Deal Scout Amazon category ingestion check\n\n"
+            f"Run time: {current_time}\n\n"
+            f"New candidates ingested this run: {ingested_count}\n"
+            "No NEW candidate items to process after ingestion.\n\n"
+            "Amazon query debug:\n"
+            f"{debug_text}"
+        )
+
+    if not all_buy_items:
+        return (
+            "Deal Scout Amazon category BUY check\n\n"
+            f"Run time: {current_time}\n\n"
+            f"New candidates ingested this run: {ingested_count}\n"
+            f"New candidates processed: {processed_new_count}\n"
+            "No BUY candidates found among new items.\n\n"
+            f"Unmatched new candidates: {len(unmatched_items)}\n\n"
+            "Amazon query debug:\n"
+            f"{debug_text}"
+        )
+
+    if not new_buy_items:
+        return (
+            "Deal Scout Amazon category BUY check\n\n"
+            f"Run time: {current_time}\n\n"
+            f"New candidates ingested this run: {ingested_count}\n"
+            f"New candidates processed: {processed_new_count}\n"
+            f"BUY candidates found among them: {len(all_buy_items)}\n"
+            "New BUY alerts: 0\n\n"
+            "All BUY items in this batch were already alerted previously.\n\n"
+            "Amazon query debug:\n"
+            f"{debug_text}"
+        )
+
+    blocks = [
+        "Deal Scout NEW Amazon BUY alert\n",
+        f"Run time: {current_time}",
+        f"New candidates ingested this run: {ingested_count}",
+        f"New candidates processed: {processed_new_count}",
+        f"BUY candidates found in batch: {len(all_buy_items)}",
+        f"New BUY alerts sent: {len(new_buy_items)}\n",
+    ]
+
+    for item in new_buy_items:
+        blocks.append(
+            f"- {item['brand']} {item['model_key']} ({item['category']})\n"
+            f"  Source: {item['source']}\n"
+            f"  Buy: ${item['buy_price']} | Resale: ${item['avg_resale_price']}\n"
+            f"  Fees: ${item['fees']} | Shipping: ${item['shipping']}\n"
+            f"  Profit: ${item['profit']} | ROI: {item['roi_pct']}%\n"
+            f"  Confidence: {item['confidence']}\n"
+            f"  Link: {item['url']}\n"
+        )
+
+    blocks.append(f"Unmatched new candidates: {len(unmatched_items)}")
+    blocks.append("\nAmazon query debug:")
+    blocks.extend([f"- {row}" for row in debug_rows[:10]])
+    return "\n".join(blocks)
+
+
+def main():
+    print("Loading watchlist...")
+    watchlist_data = load_watchlist()
+
+    print("Loading reference pricing...")
+    price_rows = load_csv_rows(PRICE_REFERENCE_PATH)
+
+    print("Loading candidates...")
+    candidate_rows = load_csv_rows(CANDIDATES_PATH)
+
+    candidate_fieldnames = list(candidate_rows[0].keys()) if candidate_rows else [
+        "timestamp", "source", "title", "price", "url", "category", "brand",
+        "model_key", "condition", "status", "notes"
+    ]
+
+    print("Ingesting fresh Amazon candidates...")
+    candidate_rows, ingested_count, debug_rows = ingest_amazon_candidates(
+        watchlist_data,
+        price_rows,
+        candidate_rows
+    )
+    print(f"Ingested {ingested_count} new Amazon candidates.")
+
+    new_count = sum(1 for row in candidate_rows if row.get("status", "").strip().lower() == "new")
+    print(f"New candidates available for processing: {new_count}")
+
+    print("Building reference lookup...")
+    reference_lookup = build_reference_lookup(price_rows)
+
+    print("Processing new candidates...")
+    scored_items, unmatched_items, candidate_rows = process_candidates(
+        candidate_rows,
+        reference_lookup,
+        watchlist_data
+    )
+
+    if scored_items:
+        print("Appending scored results...")
+        append_scored_results(scored_items, SCORED_RESULTS_PATH)
+    else:
+        print("No scored items to append.")
+
+    print("Loading alert history...")
+    alerted_keys = load_alerted_keys(ALERTED_ITEMS_PATH)
+
+    all_buy_items = [item for item in scored_items if item["action"] == "BUY"]
+    new_buy_items = [item for item in all_buy_items if build_alert_key(item) not in alerted_keys]
+
+    if new_buy_items:
+        print("Saving new BUY alerts...")
+        append_alerted_items(new_buy_items, ALERTED_ITEMS_PATH)
+    else:
+        print("No new BUY alerts to save.")
+
+    print("Updating candidate statuses...")
+    update_candidate_statuses(candidate_rows, scored_items, new_buy_items)
+
+    print("Writing updated candidate_items.csv...")
+    write_csv_rows(CANDIDATES_PATH, candidate_fieldnames, candidate_rows)
+
+    print("Building Telegram message...")
+    message = build_buy_alert_message(
+        all_buy_items,
+        new_buy_items,
+        unmatched_items,
+        new_count,
+        ingested_count,
+        debug_rows
+    )
+
+    print("Sending Telegram message...")
+    send_telegram(message)
+
+    print("Amazon category ingestion milestone run finished")
+
+
+if __name__ == "__main__":
+    main()
